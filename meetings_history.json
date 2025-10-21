@@ -1,0 +1,42 @@
+{
+  "618397146": [
+    {
+      "datetime": "21.10.2025 14:36",
+      "description": "dota2",
+      "notified_before": false,
+      "notified_now": true,
+      "reminder_minutes": [
+        5
+      ],
+      "notifications_sent": {
+        "5": true
+      },
+      "repeat": "daily",
+      "completed": false,
+      "tag": "робота",
+      "auto_completed": true
+    },
+    {
+      "datetime": "21.10.2025 15:00",
+      "description": "dota",
+      "notified_before": false,
+      "notified_now": true,
+      "reminder_minutes": [
+        5,
+        10,
+        30,
+        60
+      ],
+      "notifications_sent": {
+        "5": true,
+        "10": true,
+        "30": true,
+        "60": true
+      },
+      "repeat": "none",
+      "completed": false,
+      "tag": "важливе",
+      "auto_completed": true
+    }
+  ]
+}
