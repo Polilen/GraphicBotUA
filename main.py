@@ -8,7 +8,6 @@ import os
 import base64
 import requests
 from collections import Counter
-import hashlib
 
 # Отримання токена з змінних середовища
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -24,19 +23,15 @@ DATA_FILE = "meetings_data.json"
 SETTINGS_FILE = "user_settings.json"
 HISTORY_FILE = "meetings_history.json"
 
-file_hashes = {}
+# --- Локи для потокобезпеки ---
+meetings_lock = threading.Lock()
+settings_lock = threading.Lock()
+history_lock = threading.Lock()
+
 # --- Функції для GitHub ---
-def get_file_hash(file_path):
-    """Обчислює SHA256 хеш вмісту файлу"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return hashlib.sha256(content.encode('utf-8')).hexdigest()
-    except FileNotFoundError:
-        return None
 def save_file_to_github(file_path):
     """
-    Зберігає конкретний JSON файл у GitHub ТІЛЬКИ якщо він змінився
+    Зберігає конкретний JSON файл у GitHub
     """
     token = os.getenv("GITHUB_TOKEN", "").strip()
     repo = os.getenv("GITHUB_REPO", "username/repo-name").strip()  # ЗМІНИ НА СВІЙ РЕПОЗИТОРІЙ!
@@ -46,14 +41,6 @@ def save_file_to_github(file_path):
         return
 
     try:
-        # Обчислюємо новий хеш
-        new_hash = get_file_hash(file_path)
-        
-        # Перевіряємо, чи змінився файл
-        if file_path in file_hashes and file_hashes[file_path] == new_hash:
-            print(f"⏭️ {file_path} не змінився, пропускаємо GitHub")
-            return
-        
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
@@ -75,8 +62,6 @@ def save_file_to_github(file_path):
 
         response = requests.put(url, headers=headers, json=data)
         if response.status_code in (200, 201):
-            # Оновлюємо хеш після успішного збереження
-            file_hashes[file_path] = new_hash
             print(f"✅ {file_path} успішно оновлено у GitHub")
         else:
             print(f"❌ Не вдалося оновити {file_path} у GitHub: {response.text}")
@@ -108,6 +93,29 @@ def load_file_from_github(file_path):
     except Exception as e:
         print(f"❌ Помилка при завантаженні {file_path} з GitHub: {e}")
         return None
+
+# --- Безпечне завантаження JSON ---
+def safe_load_json(path, default=None):
+    if default is None:
+        default = {}
+    
+    # Спочатку пробуємо завантажити з GitHub
+    github_data = load_file_from_github(path)
+    if github_data is not None:
+        return github_data
+    
+    # Якщо GitHub недоступний, працюємо з локальним файлом
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, ensure_ascii=False, indent=2)
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, ensure_ascii=False, indent=2)
+        return default
 
 # Предвизначені теги з емодзі
 TAGS = {
@@ -326,68 +334,34 @@ def get_timezone_string(tz_offset):
 # Завантаження даних при старті
 def load_meetings():
     global meetings
-    # Спочатку пробуємо завантажити з GitHub
-    github_data = load_file_from_github(DATA_FILE)
-    if github_data is not None:
-        meetings = github_data
-    elif os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            meetings = json.load(f)
-    
-    # Ініціалізуємо хеш після завантаження
-    file_hashes[DATA_FILE] = get_file_hash(DATA_FILE)
+    meetings = safe_load_json(DATA_FILE, {})
 
 def load_settings():
     global user_settings
-    # Спочатку пробуємо завантажити з GitHub
-    github_data = load_file_from_github(SETTINGS_FILE)
-    if github_data is not None:
-        user_settings = github_data
-    elif os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-            user_settings = json.load(f)
-    
-    # Ініціалізуємо хеш після завантаження
-    file_hashes[SETTINGS_FILE] = get_file_hash(SETTINGS_FILE)
+    user_settings = safe_load_json(SETTINGS_FILE, {})
 
 def load_history():
     global meetings_history
-    # Спочатку пробуємо завантажити з GitHub
-    github_data = load_file_from_github(HISTORY_FILE)
-    if github_data is not None:
-        meetings_history = github_data
-    elif os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    meetings_history = json.loads(content)
-                else:
-                    meetings_history = {}
-        except json.JSONDecodeError:
-            meetings_history = {}
-            save_history()
-    else:
-        meetings_history = {}
-    
-    # Ініціалізуємо хеш після завантаження
-    file_hashes[HISTORY_FILE] = get_file_hash(HISTORY_FILE)
+    meetings_history = safe_load_json(HISTORY_FILE, {})
 
-# Збереження даних (оновлено для GitHub)
+# Збереження даних з локами
 def save_meetings():
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(meetings, f, ensure_ascii=False, indent=2)
-    save_file_to_github(DATA_FILE)
+    with meetings_lock:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(meetings, f, ensure_ascii=False, indent=2)
+        save_file_to_github(DATA_FILE)
 
 def save_settings():
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(user_settings, f, ensure_ascii=False, indent=2)
-    save_file_to_github(SETTINGS_FILE)
+    with settings_lock:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(user_settings, f, ensure_ascii=False, indent=2)
+        save_file_to_github(SETTINGS_FILE)
 
 def save_history():
-    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(meetings_history, f, ensure_ascii=False, indent=2)
-    save_file_to_github(HISTORY_FILE)
+    with history_lock:
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(meetings_history, f, ensure_ascii=False, indent=2)
+        save_file_to_github(HISTORY_FILE)
 
 # Отримати часовий пояс користувача
 def get_user_timezone(user_id):
@@ -515,6 +489,7 @@ def help_command(message):
 🆕 /updates - Дивись останні оновлення бота!
 """
     bot.reply_to(message, help_text, parse_mode='Markdown')
+
 # Команда /timezone
 @bot.message_handler(commands=['timezone'])
 def timezone_command(message):
@@ -773,7 +748,6 @@ def process_description(message):
     user_states[user_id]['description'] = message.text
     user_states[user_id]['step'] = 'tag'
     
-    # Показуємо кнопки вибору тегу
     markup = types.InlineKeyboardMarkup(row_width=2)
     tag_buttons = [
         types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'tag_{tag}')
@@ -803,7 +777,6 @@ def callback_tag(call):
     user_states[user_id]['step'] = 'reminder'
     user_states[user_id]['selected_reminders'] = []
     
-    # Показуємо кнопки вибору часу нагадування
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('⏰ 1 день', callback_data='remind_1440'),
@@ -838,7 +811,6 @@ def callback_tag_none(call):
     user_states[user_id]['step'] = 'reminder'
     user_states[user_id]['selected_reminders'] = []
     
-    # Показуємо кнопки вибору часу нагадування
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('⏰ 1 день', callback_data='remind_1440'),
@@ -862,6 +834,7 @@ def callback_tag_none(call):
         call.message.message_id,
         reply_markup=markup
     )
+
 # Обробка вибору часу нагадування
 @bot.callback_query_handler(func=lambda call: call.data.startswith('remind_'))
 def callback_reminder(call):
@@ -869,7 +842,6 @@ def callback_reminder(call):
     
     try:
         if call.data == 'remind_done':
-            # Завершуємо вибір нагадувань
             if not user_states[user_id].get('selected_reminders'):
                 bot.answer_callback_query(call.id, "❌ Обери хоча б одне нагадування!")
                 return
@@ -891,7 +863,6 @@ def callback_reminder(call):
             if user_id not in meetings:
                 meetings[user_id] = []
             
-            # Створюємо словник для відстеження повідомлень
             notifications_status = {}
             for reminder_min in user_states[user_id]['selected_reminders']:
                 notifications_status[str(reminder_min)] = False
@@ -917,7 +888,6 @@ def callback_reminder(call):
             tag = user_states[user_id].get('tag')
             tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
             
-            # Формуємо текст з обраними нагадуваннями
             reminders_list = []
             for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
                 if min_val >= 1440:
@@ -939,7 +909,6 @@ def callback_reminder(call):
             del user_states[user_id]
         
         else:
-            # Додаємо/прибираємо нагадування зі списку
             reminder_minutes = int(call.data.replace('remind_', ''))
             
             if 'selected_reminders' not in user_states[user_id]:
@@ -952,7 +921,6 @@ def callback_reminder(call):
                 user_states[user_id]['selected_reminders'].append(reminder_minutes)
                 bot.answer_callback_query(call.id, "✅ Додано")
             
-            # Оновлюємо кнопки з позначками обраних
             markup = types.InlineKeyboardMarkup()
             
             reminders_options = [
@@ -982,7 +950,6 @@ def callback_reminder(call):
             
             markup.add(types.InlineKeyboardButton('✅ Готово', callback_data='remind_done'))
             
-            # Формуємо список обраних нагадувань для відображення
             if user_states[user_id]['selected_reminders']:
                 selected_list = []
                 for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
@@ -1018,7 +985,6 @@ def callback_reminder(call):
 def quick_add_meeting(message):
     user_id = str(message.chat.id)
     
-    # Перевіряємо, чи встановлений часовий пояс
     if user_id not in user_settings or 'timezone' not in user_settings[user_id]:
         user_states[user_id] = {
             'step': 'awaiting_timezone',
@@ -1038,7 +1004,6 @@ def quick_add_meeting(message):
         bot.reply_to(message, "🌍 Спочатку обери свій часовий пояс:", reply_markup=markup)
         return
     
-    # Початок швидкого додавання
     user_states[user_id] = {'step': 'quickadd_date', 'mode': 'quickadd'}
     
     markup = types.InlineKeyboardMarkup()
@@ -1069,7 +1034,6 @@ def callback_timezone_before_quickadd(call):
     
     bot.answer_callback_query(call.id, f"✅ Встановлено")
     
-    # Початок швидкого додавання
     user_states[user_id] = {'step': 'quickadd_date', 'mode': 'quickadd'}
     
     markup = types.InlineKeyboardMarkup()
@@ -1199,7 +1163,6 @@ def process_quickadd_description(message):
     user_states[user_id]['description'] = message.text
     user_states[user_id]['step'] = 'quickadd_tag'
     
-    # Показуємо кнопки вибору тегу
     markup = types.InlineKeyboardMarkup(row_width=2)
     tag_buttons = [
         types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'quicktag_{tag}')
@@ -1233,7 +1196,6 @@ def callback_quicktag(call):
     user_states[user_id]['step'] = 'quickadd_reminder'
     user_states[user_id]['selected_reminders'] = []
     
-    # Показуємо кнопки вибору часу нагадування
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('⏰ 1 день', callback_data='quickremind_1440'),
@@ -1266,7 +1228,6 @@ def callback_quickremind(call):
     
     try:
         if call.data == 'quickremind_done':
-            # Завершуємо вибір нагадувань
             if not user_states[user_id].get('selected_reminders'):
                 bot.answer_callback_query(call.id, "❌ Обери хоча б одне нагадування!")
                 return
@@ -1288,7 +1249,6 @@ def callback_quickremind(call):
             if user_id not in meetings:
                 meetings[user_id] = []
             
-            # Створюємо словник для відстеження повідомлень
             notifications_status = {}
             for reminder_min in user_states[user_id]['selected_reminders']:
                 notifications_status[str(reminder_min)] = False
@@ -1314,7 +1274,6 @@ def callback_quickremind(call):
             tag = user_states[user_id].get('tag')
             tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
             
-            # Формуємо текст з обраними нагадуваннями
             reminders_list = []
             for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
                 if min_val >= 1440:
@@ -1336,7 +1295,6 @@ def callback_quickremind(call):
             del user_states[user_id]
         
         else:
-            # Додаємо/прибираємо нагадування зі списку
             reminder_minutes = int(call.data.replace('quickremind_', ''))
             
             if 'selected_reminders' not in user_states[user_id]:
@@ -1349,7 +1307,6 @@ def callback_quickremind(call):
                 user_states[user_id]['selected_reminders'].append(reminder_minutes)
                 bot.answer_callback_query(call.id, "✅ Додано")
             
-            # Оновлюємо кнопки
             markup = types.InlineKeyboardMarkup()
             
             reminders_options = [
@@ -1379,7 +1336,6 @@ def callback_quickremind(call):
             
             markup.add(types.InlineKeyboardButton('✅ Готово', callback_data='quickremind_done'))
             
-            # Формуємо список обраних нагадувань
             if user_states[user_id]['selected_reminders']:
                 selected_list = []
                 for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
@@ -1548,7 +1504,6 @@ def callback_edit_select(call):
         'monthly': ' 🔁 Щомісяця'
     }.get(meeting.get('repeat', 'none'), '')
     
-    # Форматуємо список нагадувань
     reminder_minutes_list = meeting.get('reminder_minutes', [])
     if isinstance(reminder_minutes_list, int):
         reminder_minutes_list = [reminder_minutes_list]
@@ -1615,7 +1570,6 @@ def callback_edit_date(call):
         'meeting_index': meeting_index
     }
     
-    # Кнопки вибору дати
     markup = types.InlineKeyboardMarkup()
     today_btn = types.InlineKeyboardButton('📅 Сьогодні', callback_data=f'editdate_today_{meeting_index}')
     tomorrow_btn = types.InlineKeyboardButton('📅 Завтра', callback_data=f'editdate_tomorrow_{meeting_index}')
@@ -1652,7 +1606,6 @@ def callback_edit_date_select(call):
             
             meetings[user_id][meeting_index]['datetime'] = f"{new_date} {old_time}"
             
-            # Скидаємо нагадування
             if 'notifications_sent' in meetings[user_id][meeting_index]:
                 for key in meetings[user_id][meeting_index]['notifications_sent']:
                     meetings[user_id][meeting_index]['notifications_sent'][key] = False
@@ -1684,7 +1637,6 @@ def callback_edit_date_select(call):
             
             meetings[user_id][meeting_index]['datetime'] = f"{new_date} {old_time}"
             
-            # Скидаємо нагадування
             if 'notifications_sent' in meetings[user_id][meeting_index]:
                 for key in meetings[user_id][meeting_index]['notifications_sent']:
                     meetings[user_id][meeting_index]['notifications_sent'][key] = False
@@ -1743,7 +1695,6 @@ def process_edit_date_custom(message):
             
             meetings[user_id][meeting_index]['datetime'] = f"{message.text} {old_time}"
             
-            # Скидаємо нагадування
             if 'notifications_sent' in meetings[user_id][meeting_index]:
                 for key in meetings[user_id][meeting_index]['notifications_sent']:
                     meetings[user_id][meeting_index]['notifications_sent'][key] = False
@@ -1773,7 +1724,6 @@ def callback_edit_time(call):
         'meeting_index': meeting_index
     }
     
-    # Кнопки вибору часу
     markup = types.InlineKeyboardMarkup(row_width=3)
     times = ['09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00', '17:00', '18:00']
     buttons = [types.InlineKeyboardButton(t, callback_data=f'edittime_{meeting_index}_{t}') for t in times]
@@ -1800,7 +1750,6 @@ def callback_edit_time_select(call):
     meeting_index = int(parts[1])
     
     if len(parts) == 3 and parts[2] == 'custom':
-        # Кастомний час
         user_states[user_id] = {
             'step': 'edit_time_custom',
             'meeting_index': meeting_index
@@ -1817,7 +1766,6 @@ def callback_edit_time_select(call):
             reply_markup=markup
         )
     else:
-        # Вибраний час з кнопок
         new_time = parts[2]
         
         if user_id in meetings and meeting_index < len(meetings[user_id]):
@@ -1826,7 +1774,6 @@ def callback_edit_time_select(call):
             
             meetings[user_id][meeting_index]['datetime'] = f"{old_date} {new_time}"
             
-            # Скидаємо нагадування
             if 'notifications_sent' in meetings[user_id][meeting_index]:
                 for key in meetings[user_id][meeting_index]['notifications_sent']:
                     meetings[user_id][meeting_index]['notifications_sent'][key] = False
@@ -1863,7 +1810,6 @@ def process_edit_time_custom(message):
             
             meetings[user_id][meeting_index]['datetime'] = f"{old_date} {message.text}"
             
-            # Скидаємо нагадування
             if 'notifications_sent' in meetings[user_id][meeting_index]:
                 for key in meetings[user_id][meeting_index]['notifications_sent']:
                     meetings[user_id][meeting_index]['notifications_sent'][key] = False
@@ -1931,7 +1877,6 @@ def callback_edit_tag(call):
         'meeting_index': meeting_index
     }
     
-    # Показуємо кнопки вибору тегу
     markup = types.InlineKeyboardMarkup(row_width=2)
     tag_buttons = [
         types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'edittag_{meeting_index}_{tag}')
@@ -1969,7 +1914,6 @@ def callback_set_edit_tag(call):
         
         bot.answer_callback_query(call.id, f"✅ {tag_name}")
         
-        # Повертаємось до меню редагування
         meeting = meetings[user_id][meeting_index]
         tag = meeting.get('tag')
         tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
@@ -1981,7 +1925,6 @@ def callback_set_edit_tag(call):
             'monthly': ' 🔁 Щомісяця'
         }.get(meeting.get('repeat', 'none'), '')
         
-        # Форматуємо список нагадувань
         reminder_minutes_list = meeting.get('reminder_minutes', [])
         if isinstance(reminder_minutes_list, int):
             reminder_minutes_list = [reminder_minutes_list]
@@ -2043,7 +1986,6 @@ def callback_edit_remind(call):
     
     meeting = meetings[user_id][meeting_index]
     
-    # Отримуємо поточні нагадування
     current_reminders = meeting.get('reminder_minutes', [])
     if isinstance(current_reminders, int):
         current_reminders = [current_reminders]
@@ -2054,7 +1996,6 @@ def callback_edit_remind(call):
         'selected_reminders': current_reminders.copy()
     }
     
-    # Показуємо кнопки вибору нагадувань
     markup = types.InlineKeyboardMarkup()
     
     reminders_options = [
@@ -2085,7 +2026,6 @@ def callback_edit_remind(call):
     markup.add(types.InlineKeyboardButton('✅ Зберегти', callback_data=f'editrem_save_{meeting_index}'))
     markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
     
-    # Формуємо список обраних нагадувань
     if current_reminders:
         selected_list = []
         for min_val in sorted(current_reminders, reverse=True):
@@ -2119,7 +2059,6 @@ def callback_toggle_edit_reminder(call):
         bot.answer_callback_query(call.id, "❌ Помилка")
         return
     
-    # Додаємо/прибираємо нагадування
     if reminder_minutes in user_states[user_id]['selected_reminders']:
         user_states[user_id]['selected_reminders'].remove(reminder_minutes)
         bot.answer_callback_query(call.id, "❌ Прибрано")
@@ -2127,7 +2066,6 @@ def callback_toggle_edit_reminder(call):
         user_states[user_id]['selected_reminders'].append(reminder_minutes)
         bot.answer_callback_query(call.id, "✅ Додано")
     
-    # Оновлюємо кнопки
     markup = types.InlineKeyboardMarkup()
     
     reminders_options = [
@@ -2158,7 +2096,6 @@ def callback_toggle_edit_reminder(call):
     markup.add(types.InlineKeyboardButton('✅ Зберегти', callback_data=f'editrem_save_{meeting_index}'))
     markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
     
-    # Формуємо список обраних
     if user_states[user_id]['selected_reminders']:
         selected_list = []
         for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
@@ -2194,7 +2131,6 @@ def callback_save_edit_reminders(call):
         
         meetings[user_id][meeting_index]['reminder_minutes'] = new_reminders
         
-        # Оновлюємо словник для відстеження повідомлень
         notifications_status = {}
         for reminder_min in new_reminders:
             notifications_status[str(reminder_min)] = False
@@ -2205,7 +2141,6 @@ def callback_save_edit_reminders(call):
         
         save_meetings()
         
-        # Формуємо текст
         reminders_list = []
         for min_val in sorted(new_reminders, reverse=True):
             if min_val >= 1440:
@@ -2219,7 +2154,6 @@ def callback_save_edit_reminders(call):
         
         bot.answer_callback_query(call.id, "✅ Збережено")
         
-        # Повертаємось до меню редагування
         meeting = meetings[user_id][meeting_index]
         tag = meeting.get('tag')
         tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
@@ -2231,7 +2165,6 @@ def callback_save_edit_reminders(call):
             'monthly': ' 🔁 Щомісяця'
         }.get(meeting.get('repeat', 'none'), '')
         
-        # Форматуємо список нагадувань
         reminder_minutes_list = meeting.get('reminder_minutes', [])
         if isinstance(reminder_minutes_list, int):
             reminder_minutes_list = [reminder_minutes_list]
@@ -2344,7 +2277,6 @@ def callback_save_edit_repeat(call):
         
         bot.answer_callback_query(call.id, f"✅ {repeat_text.capitalize()}")
         
-        # Повертаємось до меню редагування
         meeting = meetings[user_id][meeting_index]
         tag = meeting.get('tag')
         tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
@@ -2356,7 +2288,6 @@ def callback_save_edit_repeat(call):
             'monthly': ' 🔁 Щомісяця'
         }.get(meeting.get('repeat', 'none'), '')
         
-        # Форматуємо список нагадувань
         reminder_minutes_list = meeting.get('reminder_minutes', [])
         if isinstance(reminder_minutes_list, int):
             reminder_minutes_list = [reminder_minutes_list]
@@ -2402,6 +2333,7 @@ def callback_save_edit_repeat(call):
         )
     else:
         bot.answer_callback_query(call.id, "❌ Помилка")
+
 # Команда /repeat для налаштування повторюваних зустрічей
 @bot.message_handler(commands=['repeat'])
 def repeat_command(message):
@@ -2684,6 +2616,7 @@ def callback_delete_by_tag(call):
         call.message.chat.id,
         call.message.message_id
     )
+
 # Обробка введення дати для видалення
 @bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'deleteall_date')
 def process_deleteall_date(message):
@@ -2990,6 +2923,110 @@ def updates_command(message):
 """
     bot.reply_to(message, updates_text, parse_mode='Markdown')
 
+# Обробка кнопок дій з нагадуваннями
+@bot.callback_query_handler(func=lambda call: call.data.startswith('action_'))
+def callback_meeting_action(call):
+    user_id = str(call.message.chat.id)
+    action_parts = call.data.split('_')
+    action_type = action_parts[1]
+    meeting_index = int(action_parts[2])
+    
+    if action_type == 'reschedule':
+        if user_id in meetings and meeting_index < len(meetings[user_id]):
+            meeting = meetings[user_id][meeting_index]
+            
+            current_datetime = datetime.strptime(meeting['datetime'], "%d.%m.%Y %H:%M")
+            
+            new_datetime = current_datetime + timedelta(days=1)
+            meeting['datetime'] = new_datetime.strftime("%d.%m.%Y %H:%M")
+            
+            meeting['notified_before'] = False
+            meeting['notified_now'] = False
+            
+            if 'notifications_sent' in meeting:
+                for key in meeting['notifications_sent']:
+                    meeting['notifications_sent'][key] = False
+            
+            save_meetings()
+            
+            bot.answer_callback_query(call.id, "✅ Перенесено на завтра")
+            bot.edit_message_text(
+                f"🔁 Зустріч перенесена на завтра!\n\n📝 {meeting['description']}\n📅 {meeting['datetime']}",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        else:
+            bot.answer_callback_query(call.id, "❌ Помилка перенесення")
+    
+    elif action_type == 'ok':
+        if user_id in meetings and meeting_index < len(meetings[user_id]):
+            meetings[user_id][meeting_index]['completed'] = True
+            save_meetings()
+        
+        bot.answer_callback_query(call.id, "✅ OK")
+        bot.edit_message_text(
+            f"{call.message.text}\n\n✅ Прийнято!",
+            call.message.chat.id,
+            call.message.message_id
+        )
+    
+    elif action_type == 'del':
+        if user_id in meetings and meeting_index < len(meetings[user_id]):
+            deleted_meeting = meetings[user_id].pop(meeting_index)
+            save_meetings()
+            
+            bot.answer_callback_query(call.id, "✅ Зустріч видалено")
+            bot.edit_message_text(
+                f"🗑 Зустріч видалено!\n\n📝 {deleted_meeting['description']}\n📅 {deleted_meeting['datetime']}",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        else:
+            bot.answer_callback_query(call.id, "❌ Помилка видалення")
+
+# Команда /updates
+@bot.message_handler(commands=['updates'])
+def updates_command(message):
+    updates_text = """
+📢 **Останнє оновлення бота**
+
+🆕 (21.10.2025)
+
+☁️ **Інтеграція з GitHub**
+
+Тепер всі дані зберігаються в GitHub:
+- 💾 Автоматичне збереження зустрічей
+- 🔄 Синхронізація між пристроями
+- 🔐 Безпечне зберігання в хмарі
+- 📦 Резервне копіювання
+
+---
+
+🔙 **Попереднє оновлення (20.10.2025)**
+
+⏰ **Автоматичний літній/зимовий час**
+
+Бот тепер автоматично визначає та відображає літній/зимовий час для всіх міст.
+
+✏️ **Додано команду /edit**
+
+Можливість редагувати зустрічі:
+- 📅 Змінити дату
+- 🕐 Змінити час
+- 📝 Змінити опис
+- 🏷️ Змінити тег
+- ⏰ Налаштувати нагадування
+- 🔁 Змінити режим повторення
+
+⚡️ **Покращена команда /quickadd**
+
+Швидке додавання зустрічей з кнопками.
+
+---
+Використовуй /help для перегляду всіх команд
+"""
+    bot.reply_to(message, updates_text, parse_mode='Markdown')
+
 # Фоновий процес для відправки нагадувань
 def send_reminders():
     while True:
@@ -3005,29 +3042,24 @@ def send_reminders():
                     meeting_time = datetime.strptime(meeting['datetime'], "%d.%m.%Y %H:%M")
                     time_diff = (meeting_time - user_now).total_seconds()
                     
-                    # Перевіряємо, чи є список нагадувань (новий формат) або одне нагадування (старий формат)
                     reminder_minutes_list = meeting.get('reminder_minutes')
                     
-                    # Підтримка старого формату (одне число)
                     if isinstance(reminder_minutes_list, int):
                         reminder_minutes_list = [reminder_minutes_list]
                         meeting['reminder_minutes'] = reminder_minutes_list
                         meeting['notifications_sent'] = {str(reminder_minutes_list[0]): False}
                         save_meetings()
                     
-                    # Ініціалізуємо notifications_sent якщо його немає
                     if 'notifications_sent' not in meeting:
                         meeting['notifications_sent'] = {}
                         for reminder_min in reminder_minutes_list:
                             meeting['notifications_sent'][str(reminder_min)] = False
                         save_meetings()
                     
-                    # Перевіряємо кожне нагадування
                     for reminder_minutes in reminder_minutes_list:
                         reminder_seconds = reminder_minutes * 60
                         reminder_key = str(reminder_minutes)
                         
-                        # Відправляємо нагадування, якщо час підійшов і воно ще не відправлено
                         if not meeting['notifications_sent'].get(reminder_key, False) and 0 < time_diff <= reminder_seconds:
                             markup = types.InlineKeyboardMarkup()
                             markup.add(
@@ -3041,7 +3073,6 @@ def send_reminders():
                             tag = meeting.get('tag')
                             tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
                             
-                            # Форматуємо час нагадування
                             if reminder_minutes >= 1440:
                                 time_text = f"{reminder_minutes // 1440} день"
                             elif reminder_minutes >= 60:
@@ -3055,7 +3086,6 @@ def send_reminders():
                             meeting['notifications_sent'][reminder_key] = True
                             save_meetings()
                     
-                    # Нагадування у вказаний час
                     if not meeting.get('notified_now', False) and -60 <= time_diff <= 0:
                         tag = meeting.get('tag')
                         tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
@@ -3075,7 +3105,6 @@ def send_reminders():
                             elif repeat_type == 'monthly':
                                 new_time = meeting_time + timedelta(days=30)
                             
-                            # Створюємо новий словник для відстеження повідомлень
                             new_notifications_status = {}
                             for reminder_min in reminder_minutes_list:
                                 new_notifications_status[str(reminder_min)] = False
