@@ -8,6 +8,7 @@ import os
 import base64
 import requests
 from collections import Counter
+import hashlib
 
 # Отримання токена з змінних середовища
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -23,10 +24,19 @@ DATA_FILE = "meetings_data.json"
 SETTINGS_FILE = "user_settings.json"
 HISTORY_FILE = "meetings_history.json"
 
+file_hashes = {}
 # --- Функції для GitHub ---
+def get_file_hash(file_path):
+    """Обчислює SHA256 хеш вмісту файлу"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return hashlib.sha256(content.encode('utf-8')).hexdigest()
+    except FileNotFoundError:
+        return None
 def save_file_to_github(file_path):
     """
-    Зберігає конкретний JSON файл у GitHub
+    Зберігає конкретний JSON файл у GitHub ТІЛЬКИ якщо він змінився
     """
     token = os.getenv("GITHUB_TOKEN", "").strip()
     repo = os.getenv("GITHUB_REPO", "username/repo-name").strip()  # ЗМІНИ НА СВІЙ РЕПОЗИТОРІЙ!
@@ -36,6 +46,14 @@ def save_file_to_github(file_path):
         return
 
     try:
+        # Обчислюємо новий хеш
+        new_hash = get_file_hash(file_path)
+        
+        # Перевіряємо, чи змінився файл
+        if file_path in file_hashes and file_hashes[file_path] == new_hash:
+            print(f"⏭️ {file_path} не змінився, пропускаємо GitHub")
+            return
+        
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
@@ -57,6 +75,8 @@ def save_file_to_github(file_path):
 
         response = requests.put(url, headers=headers, json=data)
         if response.status_code in (200, 201):
+            # Оновлюємо хеш після успішного збереження
+            file_hashes[file_path] = new_hash
             print(f"✅ {file_path} успішно оновлено у GitHub")
         else:
             print(f"❌ Не вдалося оновити {file_path} у GitHub: {response.text}")
@@ -310,12 +330,12 @@ def load_meetings():
     github_data = load_file_from_github(DATA_FILE)
     if github_data is not None:
         meetings = github_data
-        return
-    
-    # Якщо GitHub недоступний, працюємо з локальним файлом
-    if os.path.exists(DATA_FILE):
+    elif os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             meetings = json.load(f)
+    
+    # Ініціалізуємо хеш після завантаження
+    file_hashes[DATA_FILE] = get_file_hash(DATA_FILE)
 
 def load_settings():
     global user_settings
@@ -323,12 +343,12 @@ def load_settings():
     github_data = load_file_from_github(SETTINGS_FILE)
     if github_data is not None:
         user_settings = github_data
-        return
-    
-    # Якщо GitHub недоступний, працюємо з локальним файлом
-    if os.path.exists(SETTINGS_FILE):
+    elif os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
             user_settings = json.load(f)
+    
+    # Ініціалізуємо хеш після завантаження
+    file_hashes[SETTINGS_FILE] = get_file_hash(SETTINGS_FILE)
 
 def load_history():
     global meetings_history
@@ -336,10 +356,7 @@ def load_history():
     github_data = load_file_from_github(HISTORY_FILE)
     if github_data is not None:
         meetings_history = github_data
-        return
-    
-    # Якщо GitHub недоступний, працюємо з локальним файлом
-    if os.path.exists(HISTORY_FILE):
+    elif os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
@@ -352,6 +369,9 @@ def load_history():
             save_history()
     else:
         meetings_history = {}
+    
+    # Ініціалізуємо хеш після завантаження
+    file_hashes[HISTORY_FILE] = get_file_hash(HISTORY_FILE)
 
 # Збереження даних (оновлено для GitHub)
 def save_meetings():
