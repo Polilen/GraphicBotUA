@@ -6,6 +6,7 @@ import time
 import json
 import os
 from collections import Counter
+import threading
 import base64
 import requests
 
@@ -25,39 +26,43 @@ meetings_history = {}
 DATA_FILE = "meetings_data.json"
 SETTINGS_FILE = "user_settings.json"
 HISTORY_FILE = "meetings_history.json"
+# --- Локи для потокобезпеки ---
+meetings_lock = threading.Lock()
+settings_lock = threading.Lock()
+history_lock = threading.Lock()
 
-
+# --- Функції для GitHub ---
 # --- Функції для GitHub ---
 def save_file_to_github(file_path):
     """
     Зберігає конкретний JSON файл у GitHub
     """
-    token = GITHUB_TOKEN
-    repo = GITHUB_REPO
-    
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    repo = os.getenv("GITHUB_REPO", "your_username/your_repo").strip()
+
     if not token:
         return
-    
+
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-        
+
         url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
         headers = {"Authorization": f"Bearer {token}"}
-        
+
         # Отримуємо SHA поточного файлу
         r = requests.get(url, headers=headers)
         sha = r.json().get("sha") if r.status_code == 200 else None
-        
+
         # Кодуємо файл у Base64
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        
+
         data = {
             "message": f"update {file_path}",
             "content": encoded_content,
             "sha": sha
         }
-        
+
         response = requests.put(url, headers=headers, json=data)
         if response.status_code in (200, 201):
             print(f"✅ {file_path} успішно оновлено у GitHub")
@@ -70,8 +75,8 @@ def load_file_from_github(file_path):
     """
     Завантажує конкретний JSON файл з GitHub
     """
-    token = GITHUB_TOKEN
-    repo = GITHUB_REPO
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    repo = os.getenv("GITHUB_REPO", "your_username/your_repo").strip()
     
     if not token:
         return None
@@ -306,6 +311,7 @@ def get_timezone_string(tz_offset):
         return timezones_static.get(tz_offset, f"UTC{tz_offset:+d}")
 
 # Завантаження даних при старті
+# Завантаження даних при старті
 def load_meetings():
     global meetings
     # Спочатку пробуємо завантажити з GitHub
@@ -346,7 +352,7 @@ def load_history():
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 if content:
-                    meetings_history = json.loads(content)  
+                    meetings_history = json.loads(content)
                 else:
                     meetings_history = {}
         except json.JSONDecodeError:
@@ -356,19 +362,22 @@ def load_history():
         meetings_history = {}
 # Збереження даних
 def save_meetings():
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(meetings, f, ensure_ascii=False, indent=2)
-    save_file_to_github(DATA_FILE)
+    with meetings_lock:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(meetings, f, ensure_ascii=False, indent=2)
+        save_file_to_github(DATA_FILE)
 
 def save_settings():
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(user_settings, f, ensure_ascii=False, indent=2)
-    save_file_to_github(SETTINGS_FILE)
+    with settings_lock:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(user_settings, f, ensure_ascii=False, indent=2)
+        save_file_to_github(SETTINGS_FILE)
 
 def save_history():
-    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(meetings_history, f, ensure_ascii=False, indent=2)
-    save_file_to_github(HISTORY_FILE)
+    with history_lock:
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(meetings_history, f, ensure_ascii=False, indent=2)
+        save_file_to_github(HISTORY_FILE)
 
 # Отримати часовий пояс користувача
 def get_user_timezone(user_id):
