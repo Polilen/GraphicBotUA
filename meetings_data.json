@@ -1,34 +1,3 @@
 {
-  "618397146": [
-    {
-      "datetime": "23.10.2025 15:00",
-      "description": "Dota",
-      "notified_before": false,
-      "notified_now": false,
-      "reminder_minutes": [
-        5
-      ],
-      "notifications_sent": {
-        "5": false
-      },
-      "repeat": "none",
-      "completed": false,
-      "tag": "важливе"
-    },
-    {
-      "datetime": "23.10.2025 09:00",
-      "description": "Вставать",
-      "notified_before": false,
-      "notified_now": false,
-      "reminder_minutes": [
-        5
-      ],
-      "notifications_sent": {
-        "5": false
-      },
-      "repeat": "none",
-      "completed": false,
-      "tag": "здоров'я"
-    }
-  ]
+  "618397146": []
 }
