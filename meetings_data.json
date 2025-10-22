@@ -14,6 +14,36 @@
       "repeat": "none",
       "completed": false,
       "tag": "робота"
+    },
+    {
+      "datetime": "22.10.2025 23:00",
+      "description": "daasd",
+      "notified_before": false,
+      "notified_now": false,
+      "reminder_minutes": [
+        5
+      ],
+      "notifications_sent": {
+        "5": false
+      },
+      "repeat": "none",
+      "completed": false,
+      "tag": "важливе"
+    },
+    {
+      "datetime": "23.10.2025 18:00",
+      "description": "adsasdsad",
+      "notified_before": false,
+      "notified_now": false,
+      "reminder_minutes": [
+        5
+      ],
+      "notifications_sent": {
+        "5": false
+      },
+      "repeat": "none",
+      "completed": false,
+      "tag": "сім'я"
     }
   ]
 }
