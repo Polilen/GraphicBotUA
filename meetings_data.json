@@ -1,1 +1,19 @@
-{}
+{
+  "618397146": [
+    {
+      "datetime": "22.10.2025 22:20",
+      "description": "dota",
+      "notified_before": false,
+      "notified_now": false,
+      "reminder_minutes": [
+        5
+      ],
+      "notifications_sent": {
+        "5": true
+      },
+      "repeat": "none",
+      "completed": false,
+      "tag": "важливе"
+    }
+  ]
+}
