@@ -6,18 +6,18 @@ import time
 import json
 import os
 from collections import Counter
-import threading
 import base64
 import requests
 
 # Токен твого бота (отримай у @BotFather)
-BOT_TOKEN = "7820077415:AAG7yXnwfwlNyQXQ6AWjwin7eTPuczoj4LY"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7820077415:AAG7yXnwfwlNyQXQ6AWjwin7eTPuczoj4LY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # GitHub налаштування
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
-GITHUB_REPO = os.getenv("GITHUB_REPO", "твій_username/твій_репозиторій").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "your_username/your_repo").strip()
+
 # Сховище зустрічей, станів користувачів та налаштувань
 meetings = {}
 user_states = {}
@@ -26,76 +26,24 @@ meetings_history = {}
 DATA_FILE = "meetings_data.json"
 SETTINGS_FILE = "user_settings.json"
 HISTORY_FILE = "meetings_history.json"
+
 # --- Локи для потокобезпеки ---
 meetings_lock = threading.Lock()
 settings_lock = threading.Lock()
 history_lock = threading.Lock()
 
-# --- Функції для GitHub ---
-# --- Функції для GitHub ---
-def save_file_to_github(file_path):
-    """
-    Зберігає конкретний JSON файл у GitHub
-    """
-    token = os.getenv("GITHUB_TOKEN", "").strip()
-    repo = os.getenv("GITHUB_REPO", "your_username/your_repo").strip()
+# --- Система відкладеного збереження ---
+save_queue = {
+    'meetings': {'dirty': False, 'last_save': time.time()},
+    'settings': {'dirty': False, 'last_save': time.time()},
+    'history': {'dirty': False, 'last_save': time.time()}
+}
+save_queue_lock = threading.Lock()
 
-    if not token:
-        return
+# Налаштування збереження
+SAVE_DELAY = 30  # секунд - затримка перед збереженням
+FORCE_SAVE_INTERVAL = 300  # секунд (5 хвилин) - примусове збереження
 
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
-        headers = {"Authorization": f"Bearer {token}"}
-
-        # Отримуємо SHA поточного файлу
-        r = requests.get(url, headers=headers)
-        sha = r.json().get("sha") if r.status_code == 200 else None
-
-        # Кодуємо файл у Base64
-        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-
-        data = {
-            "message": f"update {file_path}",
-            "content": encoded_content,
-            "sha": sha
-        }
-
-        response = requests.put(url, headers=headers, json=data)
-        if response.status_code in (200, 201):
-            print(f"✅ {file_path} успішно оновлено у GitHub")
-        else:
-            print(f"❌ Не вдалося оновити {file_path} у GitHub: {response.text}")
-    except Exception as e:
-        print(f"❌ Помилка при збереженні {file_path} в GitHub: {e}")
-
-def load_file_from_github(file_path):
-    """
-    Завантажує конкретний JSON файл з GitHub
-    """
-    token = os.getenv("GITHUB_TOKEN", "").strip()
-    repo = os.getenv("GITHUB_REPO", "your_username/your_repo").strip()
-    
-    if not token:
-        return None
-    
-    url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    try:
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            content = response.json()
-            decoded = base64.b64decode(content["content"]).decode("utf-8")
-            print(f"✅ {file_path} завантажено з GitHub")
-            return json.loads(decoded)
-        else:
-            return None
-    except Exception as e:
-        print(f"❌ Помилка при завантаженні {file_path} з GitHub: {e}")
-        return None
 # Предвизначені теги з емодзі
 TAGS = {
     'робота': '💼',
@@ -108,7 +56,7 @@ TAGS = {
     'важливе': '⭐'
 }
 
-# Функція для визначення чи діє літній час в Європі/Україні
+# --- Функції для визначення літнього часу ---
 def is_dst_active_europe():
     """
     Літній час в Європі: останнє воскресення березня (03:00) - останнє воскресення жовтня (04:00)
@@ -130,7 +78,6 @@ def is_dst_active_europe():
     
     return dst_start <= now < dst_end
 
-# Функція для визначення чи діє літній час в США/Канаді
 def is_dst_active_north_america():
     """
     Літній час в Північній Америці: друге воскресення березня - перше воскресення листопада
@@ -152,7 +99,6 @@ def is_dst_active_north_america():
     
     return dst_start <= now < dst_end
 
-# Функція для визначення чи діє літній час в Австралії/Новій Зеландії
 def is_dst_active_australia():
     """
     Літній час в Австралії: перше воскресення жовтня - перше воскресення квітня
@@ -175,7 +121,6 @@ def is_dst_active_australia():
     # Австралійський літній час працює "навпаки" (жовтень-квітень)
     return now >= dst_start or now < dst_end
 
-# Функція для отримання популярних часових поясів з урахуванням DST
 def get_popular_timezones():
     europe_dst = is_dst_active_europe()
     na_dst = is_dst_active_north_america()
@@ -241,7 +186,6 @@ def get_popular_timezones():
     
     return timezones
 
-# Функція для отримання рядка часового поясу
 def get_timezone_string(tz_offset):
     europe_dst = is_dst_active_europe()
     na_dst = is_dst_active_north_america()
@@ -310,7 +254,145 @@ def get_timezone_string(tz_offset):
         }
         return timezones_static.get(tz_offset, f"UTC{tz_offset:+d}")
 
-# Завантаження даних при старті
+# Отримати часовий пояс користувача
+def get_user_timezone(user_id):
+    return user_settings.get(str(user_id), {}).get('timezone', 0)
+
+# Отримати поточний час користувача
+def get_user_time(user_id):
+    tz_offset = get_user_timezone(user_id)
+    return datetime.utcnow() + timedelta(hours=tz_offset)
+
+# --- Функції для GitHub ---
+def save_file_to_github(file_path):
+    """
+    Зберігає конкретний JSON файл у GitHub
+    """
+    token = GITHUB_TOKEN
+    repo = GITHUB_REPO
+
+    if not token:
+        print(f"⚠️ GitHub token не налаштований, пропускаю {file_path}")
+        return
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Отримуємо SHA поточного файлу
+        r = requests.get(url, headers=headers)
+        sha = r.json().get("sha") if r.status_code == 200 else None
+
+        # Кодуємо файл у Base64
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+
+        data = {
+            "message": f"update {file_path}",
+            "content": encoded_content,
+            "sha": sha
+        }
+
+        response = requests.put(url, headers=headers, json=data)
+        if response.status_code in (200, 201):
+            print(f"✅ {file_path} успішно оновлено у GitHub")
+        else:
+            print(f"❌ Не вдалося оновити {file_path} у GitHub: {response.text}")
+    except Exception as e:
+        print(f"❌ Помилка при збереженні {file_path} в GitHub: {e}")
+
+def load_file_from_github(file_path):
+    """
+    Завантажує конкретний JSON файл з GitHub
+    """
+    token = GITHUB_TOKEN
+    repo = GITHUB_REPO
+    
+    if not token:
+        return None
+    
+    url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            content = response.json()
+            decoded = base64.b64decode(content["content"]).decode("utf-8")
+            print(f"✅ {file_path} завантажено з GitHub")
+            return json.loads(decoded)
+        else:
+            return None
+    except Exception as e:
+        print(f"❌ Помилка при завантаженні {file_path} з GitHub: {e}")
+        return None
+
+def mark_dirty(data_type):
+    """Позначає дані як змінені"""
+    with save_queue_lock:
+        save_queue[data_type]['dirty'] = True
+
+def github_saver_thread():
+    """Фоновий потік для збереження в GitHub"""
+    print("💾 GitHub saver потік запущено")
+    
+    while True:
+        try:
+            time.sleep(10)  # Перевіряємо кожні 10 секунд
+            
+            current_time = time.time()
+            files_to_save = []
+            
+            with save_queue_lock:
+                for data_type, info in save_queue.items():
+                    # Перевіряємо чи потрібно зберігати
+                    time_since_last_save = current_time - info['last_save']
+                    
+                    if info['dirty'] and (
+                        time_since_last_save >= SAVE_DELAY or 
+                        time_since_last_save >= FORCE_SAVE_INTERVAL
+                    ):
+                        files_to_save.append(data_type)
+                        info['dirty'] = False
+                        info['last_save'] = current_time
+            
+            # Зберігаємо файли в GitHub
+            if files_to_save:
+                file_map = {
+                    'meetings': DATA_FILE,
+                    'settings': SETTINGS_FILE,
+                    'history': HISTORY_FILE
+                }
+                
+                print(f"💾 Збереження в GitHub: {', '.join(files_to_save)} о {datetime.now().strftime('%H:%M:%S')}")
+                
+                for data_type in files_to_save:
+                    file_path = file_map[data_type]
+                    save_file_to_github(file_path)
+                
+                print(f"✅ Збережено {len(files_to_save)} файл(ів)")
+        
+        except Exception as e:
+            print(f"❌ Помилка в github_saver_thread: {e}")
+            time.sleep(30)
+
+def force_save_all():
+    """Примусове збереження всіх файлів в GitHub"""
+    print("🔄 Примусове збереження всіх файлів...")
+    
+    with save_queue_lock:
+        for data_type in save_queue:
+            save_queue[data_type]['dirty'] = False
+            save_queue[data_type]['last_save'] = time.time()
+    
+    save_file_to_github(DATA_FILE)
+    save_file_to_github(SETTINGS_FILE)
+    save_file_to_github(HISTORY_FILE)
+    
+    print("✅ Примусове збереження завершено")
+
 # Завантаження даних при старті
 def load_meetings():
     global meetings
@@ -360,33 +442,25 @@ def load_history():
             save_history()
     else:
         meetings_history = {}
+
 # Збереження даних
 def save_meetings():
     with meetings_lock:
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(meetings, f, ensure_ascii=False, indent=2)
-        save_file_to_github(DATA_FILE)
+    mark_dirty('meetings')
 
 def save_settings():
     with settings_lock:
         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_settings, f, ensure_ascii=False, indent=2)
-        save_file_to_github(SETTINGS_FILE)
+    mark_dirty('settings')
 
 def save_history():
     with history_lock:
         with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(meetings_history, f, ensure_ascii=False, indent=2)
-        save_file_to_github(HISTORY_FILE)
-
-# Отримати часовий пояс користувача
-def get_user_timezone(user_id):
-    return user_settings.get(str(user_id), {}).get('timezone', 0)
-
-# Отримати поточний час користувача
-def get_user_time(user_id):
-    tz_offset = get_user_timezone(user_id)
-    return datetime.utcnow() + timedelta(hours=tz_offset)
+    mark_dirty('history')
 
 # Функція для очищення минулих зустрічей
 def clean_old_meetings():
@@ -3427,12 +3501,47 @@ def send_reminders():
 
 # Запуск бота
 if __name__ == "__main__":
+    print("="*50)
+    print(f"🚀 Запуск бота о {datetime.now().strftime('%H:%M:%S')}")
+    print("="*50)
+    
     load_meetings()
     load_settings()
     load_history()
     
+    # Видаляємо webhook
+    try:
+        bot.remove_webhook()
+        print("🧹 Webhook очищено")
+    except Exception as e:
+        print(f"⚠️ Помилка при видаленні webhook: {e}")
+    
+    time.sleep(2)
+    
+    # Запускаємо потік нагадувань
     reminder_thread = threading.Thread(target=send_reminders, daemon=True)
     reminder_thread.start()
+    print("⏰ Потік нагадувань запущено")
     
-    print("🤖 Бот запущено!")
-    bot.infinity_polling()
+    # Запускаємо потік збереження в GitHub
+    github_thread = threading.Thread(target=github_saver_thread, daemon=True)
+    github_thread.start()
+    print("💾 Потік GitHub збереження запущено")
+    
+    print("✅ Бот працює!")
+    print(f"⚙️ Затримка збереження: {SAVE_DELAY}с")
+    print(f"⚙️ Примусове збереження: {FORCE_SAVE_INTERVAL}с")
+    print("="*50)
+    
+    try:
+        bot.infinity_polling()
+    except KeyboardInterrupt:
+        print("\n⌨️ Зупинка бота...")
+        force_save_all()  # Зберігаємо все перед виходом
+    except Exception as e:
+        print(f"❌ Критична помилка: {e}")
+        import traceback
+        traceback.print_exc()
+        force_save_all()
+    finally:
+        print("👋 Бот зупинено")
