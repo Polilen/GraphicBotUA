@@ -53,6 +53,22 @@
       "completed": false,
       "tag": "робота",
       "auto_completed": true
+    },
+    {
+      "datetime": "22.10.2025 22:30",
+      "description": "dota",
+      "notified_before": false,
+      "notified_now": true,
+      "reminder_minutes": [
+        5
+      ],
+      "notifications_sent": {
+        "5": true
+      },
+      "repeat": "none",
+      "completed": false,
+      "tag": "робота",
+      "auto_completed": true
     }
   ]
 }
