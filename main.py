@@ -5,15 +5,18 @@ import threading
 import time
 import json
 import os
+from collections import Counter
 import base64
 import requests
-from collections import Counter
 
-# Отримання токена з змінних середовища
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+# Токен твого бота (отримай у @BotFather)
+BOT_TOKEN = "7820077415:AAG7yXnwfwlNyQXQ6AWjwin7eTPuczoj4LY"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# GitHub налаштування
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "твій_username/твій_репозиторій").strip()
 # Сховище зустрічей, станів користувачів та налаштувань
 meetings = {}
 user_states = {}
@@ -23,43 +26,38 @@ DATA_FILE = "meetings_data.json"
 SETTINGS_FILE = "user_settings.json"
 HISTORY_FILE = "meetings_history.json"
 
-# --- Локи для потокобезпеки ---
-meetings_lock = threading.Lock()
-settings_lock = threading.Lock()
-history_lock = threading.Lock()
 
 # --- Функції для GitHub ---
 def save_file_to_github(file_path):
     """
     Зберігає конкретний JSON файл у GitHub
     """
-    token = os.getenv("GITHUB_TOKEN", "").strip()
-    repo = os.getenv("GITHUB_REPO", "username/repo-name").strip()  # ЗМІНИ НА СВІЙ РЕПОЗИТОРІЙ!
-
+    token = GITHUB_TOKEN
+    repo = GITHUB_REPO
+    
     if not token:
-        print(f"⚠️ GITHUB_TOKEN не встановлено, файл {file_path} збережено тільки локально")
         return
-
+    
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-
+        
         url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
         headers = {"Authorization": f"Bearer {token}"}
-
+        
         # Отримуємо SHA поточного файлу
         r = requests.get(url, headers=headers)
         sha = r.json().get("sha") if r.status_code == 200 else None
-
+        
         # Кодуємо файл у Base64
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-
+        
         data = {
             "message": f"update {file_path}",
             "content": encoded_content,
             "sha": sha
         }
-
+        
         response = requests.put(url, headers=headers, json=data)
         if response.status_code in (200, 201):
             print(f"✅ {file_path} успішно оновлено у GitHub")
@@ -72,8 +70,8 @@ def load_file_from_github(file_path):
     """
     Завантажує конкретний JSON файл з GitHub
     """
-    token = os.getenv("GITHUB_TOKEN", "").strip()
-    repo = os.getenv("GITHUB_REPO", "username/repo-name").strip()  # ЗМІНИ НА СВІЙ РЕПОЗИТОРІЙ!
+    token = GITHUB_TOKEN
+    repo = GITHUB_REPO
     
     if not token:
         return None
@@ -93,30 +91,6 @@ def load_file_from_github(file_path):
     except Exception as e:
         print(f"❌ Помилка при завантаженні {file_path} з GitHub: {e}")
         return None
-
-# --- Безпечне завантаження JSON ---
-def safe_load_json(path, default=None):
-    if default is None:
-        default = {}
-    
-    # Спочатку пробуємо завантажити з GitHub
-    github_data = load_file_from_github(path)
-    if github_data is not None:
-        return github_data
-    
-    # Якщо GitHub недоступний, працюємо з локальним файлом
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(default, f, ensure_ascii=False, indent=2)
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(default, f, ensure_ascii=False, indent=2)
-        return default
-
 # Предвизначені теги з емодзі
 TAGS = {
     'робота': '💼',
@@ -334,34 +308,67 @@ def get_timezone_string(tz_offset):
 # Завантаження даних при старті
 def load_meetings():
     global meetings
-    meetings = safe_load_json(DATA_FILE, {})
+    # Спочатку пробуємо завантажити з GitHub
+    github_data = load_file_from_github(DATA_FILE)
+    if github_data is not None:
+        meetings = github_data
+        return
+    
+    # Якщо GitHub недоступний, працюємо з локальним файлом
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            meetings = json.load(f)
 
 def load_settings():
     global user_settings
-    user_settings = safe_load_json(SETTINGS_FILE, {})
+    # Спочатку пробуємо завантажити з GitHub
+    github_data = load_file_from_github(SETTINGS_FILE)
+    if github_data is not None:
+        user_settings = github_data
+        return
+    
+    # Якщо GitHub недоступний, працюємо з локальним файлом
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            user_settings = json.load(f)
 
 def load_history():
     global meetings_history
-    meetings_history = safe_load_json(HISTORY_FILE, {})
-
-# Збереження даних з локами
+    # Спочатку пробуємо завантажити з GitHub
+    github_data = load_file_from_github(HISTORY_FILE)
+    if github_data is not None:
+        meetings_history = github_data
+        return
+    
+    # Якщо GitHub недоступний, працюємо з локальним файлом
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    meetings_history = json.loads(content)  
+                else:
+                    meetings_history = {}
+        except json.JSONDecodeError:
+            meetings_history = {}
+            save_history()
+    else:
+        meetings_history = {}
+# Збереження даних
 def save_meetings():
-    with meetings_lock:
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(meetings, f, ensure_ascii=False, indent=2)
-        save_file_to_github(DATA_FILE)
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(meetings, f, ensure_ascii=False, indent=2)
+    save_file_to_github(DATA_FILE)
 
 def save_settings():
-    with settings_lock:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(user_settings, f, ensure_ascii=False, indent=2)
-        save_file_to_github(SETTINGS_FILE)
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(user_settings, f, ensure_ascii=False, indent=2)
+    save_file_to_github(SETTINGS_FILE)
 
 def save_history():
-    with history_lock:
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(meetings_history, f, ensure_ascii=False, indent=2)
-        save_file_to_github(HISTORY_FILE)
+    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(meetings_history, f, ensure_ascii=False, indent=2)
+    save_file_to_github(HISTORY_FILE)
 
 # Отримати часовий пояс користувача
 def get_user_timezone(user_id):
@@ -410,7 +417,7 @@ def start_command(message):
 
 📋 Що я вмію:
 /add - Додати зустріч (покроковий діалог)
-/quickadd - Швидко додати зустріч
+/quickadd - Швидко додати зустріч однією командою
 /list - Показати всі зустрічі
 /listbytag - Фільтр зустрічей за тегами
 /edit - Редагувати зустріч
@@ -545,7 +552,7 @@ def timezone_command(message):
         bot.reply_to(message, "❌ Невірний формат!\n\nВикористовуй:\n/timezone +3 (для UTC+3)\n/timezone -5 (для UTC-5)\n/timezone 0 (для UTC)")
 
 # Обробка вибору часового поясу через кнопки
-@bot.callback_query_handler(func=lambda call: call.data.startswith('tz_') and not call.data.startswith('tzadd_') and not call.data.startswith('tzquick_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('tz_'))
 def callback_timezone(call):
     user_id = str(call.message.chat.id)
     tz_value = int(call.data.replace('tz_', ''))
@@ -703,27 +710,25 @@ def process_custom_date(message):
         bot.send_message(message.chat.id, "❌ Невірний формат дати!\n\nВикористовуй формат: ДД.ММ.РРРР\nНаприклад: 20.10.2025")
 
 # Обробка вибору часу через inline-кнопки
-@bot.callback_query_handler(func=lambda call: call.data.startswith('time_') and not call.data.startswith('time_other'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('time_'))
 def callback_time(call):
     user_id = str(call.message.chat.id)
     
-    time_str = call.data.replace('time_', '')
-    user_states[user_id]['time'] = time_str
-    user_states[user_id]['step'] = 'description'
-    bot.answer_callback_query(call.id, f"✅ {time_str}")
-    
-    bot.edit_message_text(
-        f"📝 Опиши зустріч\n\nДата: {user_states[user_id]['date']}\nЧас: {user_states[user_id]['time']}\n\nНаприклад: Зустріч з клієнтом",
-        call.message.chat.id, call.message.message_id
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == 'time_other')
-def callback_time_other(call):
-    user_id = str(call.message.chat.id)
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text("🕐 Введи час у форматі ГГ:ХХ\n\nНаприклад: 14:30", 
-                         call.message.chat.id, call.message.message_id)
-    user_states[user_id]['step'] = 'custom_time'
+    if call.data == 'time_other':
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text("🕐 Введи час у форматі ГГ:ХХ\n\nНаприклад: 14:30", 
+                             call.message.chat.id, call.message.message_id)
+        user_states[user_id]['step'] = 'custom_time'
+    else:
+        time_str = call.data.replace('time_', '')
+        user_states[user_id]['time'] = time_str
+        user_states[user_id]['step'] = 'description'
+        bot.answer_callback_query(call.id, f"✅ {time_str}")
+        
+        bot.edit_message_text(
+            f"📝 Опиши зустріч\n\nДата: {user_states[user_id]['date']}\nЧас: {user_states[user_id]['time']}\n\nНаприклад: Зустріч з клієнтом",
+            call.message.chat.id, call.message.message_id
+        )
 
 # Обробка введення кастомного часу
 @bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'custom_time')
@@ -748,6 +753,7 @@ def process_description(message):
     user_states[user_id]['description'] = message.text
     user_states[user_id]['step'] = 'tag'
     
+    # Показуємо кнопки вибору тегу
     markup = types.InlineKeyboardMarkup(row_width=2)
     tag_buttons = [
         types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'tag_{tag}')
@@ -766,17 +772,22 @@ def process_description(message):
     )
 
 # Обробка вибору тегу
-@bot.callback_query_handler(func=lambda call: call.data.startswith('tag_') and not call.data.startswith('tag_none'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('tag_'))
 def callback_tag(call):
     user_id = str(call.message.chat.id)
     tag = call.data.replace('tag_', '')
     
-    user_states[user_id]['tag'] = tag
-    tag_emoji = TAGS.get(tag, '')
+    if tag == 'none':
+        user_states[user_id]['tag'] = None
+        tag_emoji = ''
+    else:
+        user_states[user_id]['tag'] = tag
+        tag_emoji = TAGS.get(tag, '')
     
     user_states[user_id]['step'] = 'reminder'
-    user_states[user_id]['selected_reminders'] = []
+    user_states[user_id]['selected_reminders'] = []  # Новое: список обраних нагадувань
     
+    # Показуємо кнопки вибору часу нагадування
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('⏰ 1 день', callback_data='remind_1440'),
@@ -793,43 +804,10 @@ def callback_tag(call):
         types.InlineKeyboardButton('✅ Готово', callback_data='remind_done')
     )
     
-    tag_text = f"\n🏷️ {tag_emoji} {tag.capitalize()}"
-    bot.answer_callback_query(call.id, f"✅ {tag_emoji} {tag.capitalize()}")
+    tag_text = f"\n🏷️ {tag_emoji} {tag.capitalize()}" if tag != 'none' else ""
+    bot.answer_callback_query(call.id, f"✅ {tag_emoji} {tag.capitalize() if tag != 'none' else 'Без тегу'}")
     bot.edit_message_text(
         f"⏰ Обери нагадування (можна кілька):\n\n📅 {user_states[user_id]['date']}\n🕐 {user_states[user_id]['time']}\n📝 {user_states[user_id]['description']}{tag_text}\n\nОбрано: немає",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == 'tag_none')
-def callback_tag_none(call):
-    user_id = str(call.message.chat.id)
-    
-    user_states[user_id]['tag'] = None
-    
-    user_states[user_id]['step'] = 'reminder'
-    user_states[user_id]['selected_reminders'] = []
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton('⏰ 1 день', callback_data='remind_1440'),
-        types.InlineKeyboardButton('⏰ 1 година', callback_data='remind_60')
-    )
-    markup.add(
-        types.InlineKeyboardButton('⏰ 30 хвилин', callback_data='remind_30'),
-        types.InlineKeyboardButton('⏰ 10 хвилин', callback_data='remind_10')
-    )
-    markup.add(
-        types.InlineKeyboardButton('⏰ 5 хвилин', callback_data='remind_5')
-    )
-    markup.add(
-        types.InlineKeyboardButton('✅ Готово', callback_data='remind_done')
-    )
-    
-    bot.answer_callback_query(call.id, "✅ Без тегу")
-    bot.edit_message_text(
-        f"⏰ Обери нагадування (можна кілька):\n\n📅 {user_states[user_id]['date']}\n🕐 {user_states[user_id]['time']}\n📝 {user_states[user_id]['description']}\n\nОбрано: немає",
         call.message.chat.id,
         call.message.message_id,
         reply_markup=markup
@@ -842,6 +820,7 @@ def callback_reminder(call):
     
     try:
         if call.data == 'remind_done':
+            # Завершуємо вибір нагадувань
             if not user_states[user_id].get('selected_reminders'):
                 bot.answer_callback_query(call.id, "❌ Обери хоча б одне нагадування!")
                 return
@@ -863,6 +842,7 @@ def callback_reminder(call):
             if user_id not in meetings:
                 meetings[user_id] = []
             
+            # Створюємо словник для відстеження повідомлень
             notifications_status = {}
             for reminder_min in user_states[user_id]['selected_reminders']:
                 notifications_status[str(reminder_min)] = False
@@ -872,8 +852,8 @@ def callback_reminder(call):
                 "description": description,
                 "notified_before": False,
                 "notified_now": False,
-                "reminder_minutes": user_states[user_id]['selected_reminders'],
-                "notifications_sent": notifications_status,
+                "reminder_minutes": user_states[user_id]['selected_reminders'],  # Список нагадувань
+                "notifications_sent": notifications_status,  # Статус відправки кожного нагадування
                 "repeat": "none",
                 "completed": False,
                 "tag": user_states[user_id].get('tag')
@@ -888,6 +868,7 @@ def callback_reminder(call):
             tag = user_states[user_id].get('tag')
             tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
             
+            # Формуємо текст з обраними нагадуваннями
             reminders_list = []
             for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
                 if min_val >= 1440:
@@ -909,18 +890,22 @@ def callback_reminder(call):
             del user_states[user_id]
         
         else:
+            # Додаємо/прибираємо нагадування зі списку
             reminder_minutes = int(call.data.replace('remind_', ''))
             
             if 'selected_reminders' not in user_states[user_id]:
                 user_states[user_id]['selected_reminders'] = []
             
             if reminder_minutes in user_states[user_id]['selected_reminders']:
+                # Прибираємо нагадування
                 user_states[user_id]['selected_reminders'].remove(reminder_minutes)
                 bot.answer_callback_query(call.id, "❌ Прибрано")
             else:
+                # Додаємо нагадування
                 user_states[user_id]['selected_reminders'].append(reminder_minutes)
                 bot.answer_callback_query(call.id, "✅ Додано")
             
+            # Оновлюємо кнопки з позначками обраних
             markup = types.InlineKeyboardMarkup()
             
             reminders_options = [
@@ -950,6 +935,7 @@ def callback_reminder(call):
             
             markup.add(types.InlineKeyboardButton('✅ Готово', callback_data='remind_done'))
             
+            # Формуємо список обраних нагадувань для відображення
             if user_states[user_id]['selected_reminders']:
                 selected_list = []
                 for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
@@ -980,11 +966,12 @@ def callback_reminder(call):
         if user_id in user_states:
             del user_states[user_id]
 
-# Команда /quickadd
+# Команда /quickadd (оновлена - тепер як покроковий діалог)
 @bot.message_handler(commands=['quickadd'])
 def quick_add_meeting(message):
     user_id = str(message.chat.id)
     
+    # Перевіряємо, чи встановлений часовий пояс
     if user_id not in user_settings or 'timezone' not in user_settings[user_id]:
         user_states[user_id] = {
             'step': 'awaiting_timezone',
@@ -1004,6 +991,7 @@ def quick_add_meeting(message):
         bot.reply_to(message, "🌍 Спочатку обери свій часовий пояс:", reply_markup=markup)
         return
     
+    # Початок швидкого додавання
     user_states[user_id] = {'step': 'quickadd_date', 'mode': 'quickadd'}
     
     markup = types.InlineKeyboardMarkup()
@@ -1034,6 +1022,7 @@ def callback_timezone_before_quickadd(call):
     
     bot.answer_callback_query(call.id, f"✅ Встановлено")
     
+    # Початок швидкого додавання
     user_states[user_id] = {'step': 'quickadd_date', 'mode': 'quickadd'}
     
     markup = types.InlineKeyboardMarkup()
@@ -1163,6 +1152,7 @@ def process_quickadd_description(message):
     user_states[user_id]['description'] = message.text
     user_states[user_id]['step'] = 'quickadd_tag'
     
+    # Показуємо кнопки вибору тегу
     markup = types.InlineKeyboardMarkup(row_width=2)
     tag_buttons = [
         types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'quicktag_{tag}')
@@ -1196,6 +1186,7 @@ def callback_quicktag(call):
     user_states[user_id]['step'] = 'quickadd_reminder'
     user_states[user_id]['selected_reminders'] = []
     
+    # Показуємо кнопки вибору часу нагадування
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('⏰ 1 день', callback_data='quickremind_1440'),
@@ -1228,6 +1219,7 @@ def callback_quickremind(call):
     
     try:
         if call.data == 'quickremind_done':
+            # Завершуємо вибір нагадувань
             if not user_states[user_id].get('selected_reminders'):
                 bot.answer_callback_query(call.id, "❌ Обери хоча б одне нагадування!")
                 return
@@ -1249,6 +1241,7 @@ def callback_quickremind(call):
             if user_id not in meetings:
                 meetings[user_id] = []
             
+            # Створюємо словник для відстеження повідомлень
             notifications_status = {}
             for reminder_min in user_states[user_id]['selected_reminders']:
                 notifications_status[str(reminder_min)] = False
@@ -1274,6 +1267,7 @@ def callback_quickremind(call):
             tag = user_states[user_id].get('tag')
             tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
             
+            # Формуємо текст з обраними нагадуваннями
             reminders_list = []
             for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
                 if min_val >= 1440:
@@ -1295,6 +1289,7 @@ def callback_quickremind(call):
             del user_states[user_id]
         
         else:
+            # Додаємо/прибираємо нагадування зі списку
             reminder_minutes = int(call.data.replace('quickremind_', ''))
             
             if 'selected_reminders' not in user_states[user_id]:
@@ -1307,6 +1302,7 @@ def callback_quickremind(call):
                 user_states[user_id]['selected_reminders'].append(reminder_minutes)
                 bot.answer_callback_query(call.id, "✅ Додано")
             
+            # Оновлюємо кнопки
             markup = types.InlineKeyboardMarkup()
             
             reminders_options = [
@@ -1336,6 +1332,450 @@ def callback_quickremind(call):
             
             markup.add(types.InlineKeyboardButton('✅ Готово', callback_data='quickremind_done'))
             
+            # Формуємо список обраних нагадувань
+            if user_states[user_id]['selected_reminders']:
+                selected_list = []
+                for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
+                    if min_val >= 1440:
+                        selected_list.append(f"{min_val // 1440} день")
+                    elif min_val >= 60:
+                        selected_list.append(f"{min_val // 60} год")
+                    else:
+                        selected_list.append(f"{min_val} хв")
+                selected_text = ", ".join(selected_list)
+            else:
+                selected_text = "немає"
+            
+            tag = user_states[user_id].get('tag')
+            tag_emoji = TAGS.get(tag, '') if tag else ''
+            tag_text = f"\n🏷️ {tag_emoji} {tag.capitalize()}" if tag else ""
+            
+            bot.edit_message_text(
+                f"⚡️ Швидке додавання\n\n⏰ Обери нагадування (можна кілька):\n\n📅 {user_states[user_id]['date']}\n🕐 {user_states[user_id]['time']}\n📝 {user_states[user_id]['description']}{tag_text}\n\nОбрано: {selected_text}",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup
+            )
+        
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"❌ Помилка")
+        bot.edit_message_text(f"❌ Помилка: {str(e)}", call.message.chat.id, call.message.message_id)
+        if user_id in user_states:
+            del user_states[user_id]
+
+# Команда /updates (оновлена)
+@bot.message_handler(commands=['updates'])
+def updates_command(message):
+    updates_text = """
+📢 **Останнє оновлення бота**
+
+🆕 (20.10.2025)
+
+⏰ **Автоматичний літній/зимовий час**
+
+Бот тепер автоматично визначає та відображає літній/зимовий час для всіх міст:
+- 🌍 Європа (Київ, Лондон, Париж, Берлін, Афіни)
+- 🌎 Північна Америка (Нью-Йорк, Лос-Анджелес, Денвер, Мехіко)
+- 🌏 Австралія та Океанія (Сідней, Окленд)
+
+Позначки:
+- ⏰ літній час
+- ❄️ зимовий час
+
+⚡️ **Покращена команда /quickadd**
+
+Тепер quickadd працює як повноцінний діалог:
+- 📅 Вибір дати через кнопки (сьогодні/завтра/інша)
+- 🕐 Вибір часу через кнопки або введення свого
+- 🏷️ Вибір тегу
+- ⏰ Вибір кількох нагадувань
+
+---
+
+🔙 **Попереднє оновлення (19.10.2025)**
+
+✏️ **Додано команду /edit**
+
+Можливість редагувати зустрічі:
+- 📅 Змінити дату
+- 🕐 Змінити час
+- 📝 Змінити опис
+- 🏷️ Змінити тег
+- ⏰ Налаштувати нагадування
+- 🔁 Змінити режим повторення
+
+---
+Використовуй /help для перегляду всіх команд
+"""
+    bot.reply_to(message, updates_text, parse_mode='Markdown')
+
+# Команда /quickadd (оновлена - тепер як покроковий діалог)
+@bot.message_handler(commands=['quickadd'])
+def quick_add_meeting(message):
+    user_id = str(message.chat.id)
+    
+    # Перевіряємо, чи встановлений часовий пояс
+    if user_id not in user_settings or 'timezone' not in user_settings[user_id]:
+        user_states[user_id] = {
+            'step': 'awaiting_timezone',
+            'next_command': 'quickadd'
+        }
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        popular_timezones = get_popular_timezones()
+        
+        buttons = [types.InlineKeyboardButton(label, callback_data=f'tzquick_{offset}') for offset, label in popular_timezones]
+        for i in range(0, len(buttons), 2):
+            if i+1 < len(buttons):
+                markup.add(buttons[i], buttons[i+1])
+            else:
+                markup.add(buttons[i])
+        
+        bot.reply_to(message, "🌍 Спочатку обери свій часовий пояс:", reply_markup=markup)
+        return
+    
+    # Початок швидкого додавання
+    user_states[user_id] = {'step': 'quickadd_date', 'mode': 'quickadd'}
+    
+    markup = types.InlineKeyboardMarkup()
+    today_btn = types.InlineKeyboardButton('📅 Сьогодні', callback_data='quickdate_today')
+    tomorrow_btn = types.InlineKeyboardButton('📅 Завтра', callback_data='quickdate_tomorrow')
+    other_btn = types.InlineKeyboardButton('📅 Інша дата', callback_data='quickdate_other')
+    markup.add(today_btn, tomorrow_btn)
+    markup.add(other_btn)
+    
+    tz = get_user_timezone(user_id)
+    tz_str = get_timezone_string(tz)
+    
+    bot.reply_to(message, f"⚡️ Швидке додавання зустрічі\n\n📅 Обери дату:\n\n🌍 Часовий пояс: {tz_str}", reply_markup=markup)
+
+# Обробка вибору часового поясу перед quickadd
+@bot.callback_query_handler(func=lambda call: call.data.startswith('tzquick_'))
+def callback_timezone_before_quickadd(call):
+    user_id = str(call.message.chat.id)
+    tz_value = int(call.data.replace('tzquick_', ''))
+    
+    if user_id not in user_settings:
+        user_settings[user_id] = {}
+    
+    user_settings[user_id]['timezone'] = tz_value
+    save_settings()
+    
+    tz_str = get_timezone_string(tz_value)
+    
+    bot.answer_callback_query(call.id, f"✅ Встановлено")
+    
+    # Початок швидкого додавання
+    user_states[user_id] = {'step': 'quickadd_date', 'mode': 'quickadd'}
+    
+    markup = types.InlineKeyboardMarkup()
+    today_btn = types.InlineKeyboardButton('📅 Сьогодні', callback_data='quickdate_today')
+    tomorrow_btn = types.InlineKeyboardButton('📅 Завтра', callback_data='quickdate_tomorrow')
+    other_btn = types.InlineKeyboardButton('📅 Інша дата', callback_data='quickdate_other')
+    markup.add(today_btn, tomorrow_btn)
+    markup.add(other_btn)
+    
+    bot.edit_message_text(
+        f"✅ Часовий пояс встановлено: {tz_str}\n\n⚡️ Швидке додавання зустрічі\n\n📅 Обери дату:",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+# Обробка вибору дати для quickadd
+@bot.callback_query_handler(func=lambda call: call.data.startswith('quickdate_'))
+def callback_quickdate(call):
+    user_id = str(call.message.chat.id)
+    
+    if call.data == 'quickdate_today':
+        selected_date = get_user_time(user_id)
+        user_states[user_id]['date'] = selected_date.strftime('%d.%m.%Y')
+        user_states[user_id]['step'] = 'quickadd_time'
+        bot.answer_callback_query(call.id, "✅ Сьогодні")
+        show_quickadd_time_selection(call.message.chat.id, call.message.message_id, user_states[user_id]['date'])
+        
+    elif call.data == 'quickdate_tomorrow':
+        selected_date = get_user_time(user_id) + timedelta(days=1)
+        user_states[user_id]['date'] = selected_date.strftime('%d.%m.%Y')
+        user_states[user_id]['step'] = 'quickadd_time'
+        bot.answer_callback_query(call.id, "✅ Завтра")
+        show_quickadd_time_selection(call.message.chat.id, call.message.message_id, user_states[user_id]['date'])
+        
+    elif call.data == 'quickdate_other':
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text("📅 Введи дату у форматі ДД.ММ.РРРР\n\nНаприклад: 20.10.2025", 
+                             call.message.chat.id, call.message.message_id)
+        user_states[user_id]['step'] = 'quickadd_custom_date'
+
+# Функція для показу вибору часу в quickadd
+def show_quickadd_time_selection(chat_id, message_id, date_str):
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    times = ['09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00', '17:00', '18:00']
+    buttons = [types.InlineKeyboardButton(t, callback_data=f'quicktime_{t}') for t in times]
+    
+    for i in range(0, len(buttons), 3):
+        markup.add(*buttons[i:i+3])
+    
+    markup.add(types.InlineKeyboardButton('🕐 Інший час', callback_data='quicktime_other'))
+    
+    bot.edit_message_text(f"⚡️ Швидке додавання\n\n🕐 Обери час зустрічі\n(Дата: {date_str}):", 
+                         chat_id, message_id, reply_markup=markup)
+
+# Обробка введення кастомної дати для quickadd
+@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'quickadd_custom_date')
+def process_quickadd_custom_date(message):
+    user_id = str(message.chat.id)
+    
+    try:
+        date_obj = datetime.strptime(message.text, '%d.%m.%Y')
+        user_now = get_user_time(user_id)
+        
+        if date_obj.date() < user_now.date():
+            bot.send_message(message.chat.id, "❌ Не можна створити зустріч у минулому! Введи іншу дату:")
+            return
+        
+        user_states[user_id]['date'] = message.text
+        user_states[user_id]['step'] = 'quickadd_time'
+        
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        times = ['09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00', '17:00', '18:00']
+        buttons = [types.InlineKeyboardButton(t, callback_data=f'quicktime_{t}') for t in times]
+        
+        for i in range(0, len(buttons), 3):
+            markup.add(*buttons[i:i+3])
+        
+        markup.add(types.InlineKeyboardButton('🕐 Інший час', callback_data='quicktime_other'))
+        
+        bot.send_message(message.chat.id, f"⚡️ Швидке додавання\n\n🕐 Обери час зустрічі\n(Дата: {user_states[user_id]['date']}):", reply_markup=markup)
+        
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Невірний формат дати!\n\nВикористовуй формат: ДД.ММ.РРРР\nНаприклад: 20.10.2025")
+
+# Обробка вибору часу для quickadd
+@bot.callback_query_handler(func=lambda call: call.data.startswith('quicktime_'))
+def callback_quicktime(call):
+    user_id = str(call.message.chat.id)
+    
+    if call.data == 'quicktime_other':
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text("🕐 Введи час у форматі ГГ:ХХ\n\nНаприклад: 14:30", 
+                             call.message.chat.id, call.message.message_id)
+        user_states[user_id]['step'] = 'quickadd_custom_time'
+    else:
+        time_str = call.data.replace('quicktime_', '')
+        user_states[user_id]['time'] = time_str
+        user_states[user_id]['step'] = 'quickadd_description'
+        bot.answer_callback_query(call.id, f"✅ {time_str}")
+        
+        bot.edit_message_text(
+            f"⚡️ Швидке додавання\n\n📝 Опиши зустріч\n\nДата: {user_states[user_id]['date']}\nЧас: {user_states[user_id]['time']}\n\nНаприклад: Зустріч з клієнтом",
+            call.message.chat.id, call.message.message_id
+        )
+
+# Обробка введення кастомного часу для quickadd
+@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'quickadd_custom_time')
+def process_quickadd_custom_time(message):
+    user_id = str(message.chat.id)
+    
+    try:
+        time_obj = datetime.strptime(message.text, '%H:%M')
+        user_states[user_id]['time'] = message.text
+        user_states[user_id]['step'] = 'quickadd_description'
+        
+        bot.send_message(message.chat.id, f"⚡️ Швидке додавання\n\n📝 Опиши зустріч\n\nДата: {user_states[user_id]['date']}\nЧас: {user_states[user_id]['time']}\n\nНаприклад: Зустріч з клієнтом")
+        
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Невірний формат часу!\n\nВикористовуй формат: ГГ:ХХ\nНаприклад: 14:30")
+
+# Обробка опису для quickadd
+@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'quickadd_description')
+def process_quickadd_description(message):
+    user_id = str(message.chat.id)
+    
+    user_states[user_id]['description'] = message.text
+    user_states[user_id]['step'] = 'quickadd_tag'
+    
+    # Показуємо кнопки вибору тегу
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    tag_buttons = [
+        types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'quicktag_{tag}')
+        for tag, emoji in TAGS.items()
+    ]
+    
+    for i in range(0, len(tag_buttons), 2):
+        markup.add(*tag_buttons[i:i+2])
+    
+    markup.add(types.InlineKeyboardButton('➡️ Без тегу', callback_data='quicktag_none'))
+    
+    bot.send_message(
+        message.chat.id,
+        f"⚡️ Швидке додавання\n\n🏷️ Обери тег для зустрічі:\n\n📝 {message.text}",
+        reply_markup=markup
+    )
+
+# Обробка вибору тегу для quickadd
+@bot.callback_query_handler(func=lambda call: call.data.startswith('quicktag_'))
+def callback_quicktag(call):
+    user_id = str(call.message.chat.id)
+    tag = call.data.replace('quicktag_', '')
+    
+    if tag == 'none':
+        user_states[user_id]['tag'] = None
+        tag_emoji = ''
+    else:
+        user_states[user_id]['tag'] = tag
+        tag_emoji = TAGS.get(tag, '')
+    
+    user_states[user_id]['step'] = 'quickadd_reminder'
+    user_states[user_id]['selected_reminders'] = []
+    
+    # Показуємо кнопки вибору часу нагадування
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton('⏰ 1 день', callback_data='quickremind_1440'),
+        types.InlineKeyboardButton('⏰ 1 година', callback_data='quickremind_60')
+    )
+    markup.add(
+        types.InlineKeyboardButton('⏰ 30 хвилин', callback_data='quickremind_30'),
+        types.InlineKeyboardButton('⏰ 10 хвилин', callback_data='quickremind_10')
+    )
+    markup.add(
+        types.InlineKeyboardButton('⏰ 5 хвилин', callback_data='quickremind_5')
+    )
+    markup.add(
+        types.InlineKeyboardButton('✅ Готово', callback_data='quickremind_done')
+    )
+    
+    tag_text = f"\n🏷️ {tag_emoji} {tag.capitalize()}" if tag != 'none' else ""
+    bot.answer_callback_query(call.id, f"✅ {tag_emoji} {tag.capitalize() if tag != 'none' else 'Без тегу'}")
+    bot.edit_message_text(
+        f"⚡️ Швидке додавання\n\n⏰ Обери нагадування (можна кілька):\n\n📅 {user_states[user_id]['date']}\n🕐 {user_states[user_id]['time']}\n📝 {user_states[user_id]['description']}{tag_text}\n\nОбрано: немає",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+# Обробка вибору нагадувань для quickadd
+@bot.callback_query_handler(func=lambda call: call.data.startswith('quickremind_'))
+def callback_quickremind(call):
+    user_id = str(call.message.chat.id)
+    
+    try:
+        if call.data == 'quickremind_done':
+            # Завершуємо вибір нагадувань
+            if not user_states[user_id].get('selected_reminders'):
+                bot.answer_callback_query(call.id, "❌ Обери хоча б одне нагадування!")
+                return
+            
+            date_str = user_states[user_id]['date']
+            time_str = user_states[user_id]['time']
+            description = user_states[user_id]['description']
+            
+            datetime_str = f"{date_str} {time_str}"
+            meeting_datetime = datetime.strptime(datetime_str, "%d.%m.%Y %H:%M")
+            user_now = get_user_time(user_id)
+            
+            if meeting_datetime <= user_now:
+                bot.answer_callback_query(call.id, "❌ Не можна додати зустріч у минулому!")
+                bot.edit_message_text("❌ Не можна додати зустріч у минулому!", call.message.chat.id, call.message.message_id)
+                del user_states[user_id]
+                return
+            
+            if user_id not in meetings:
+                meetings[user_id] = []
+            
+            # Створюємо словник для відстеження повідомлень
+            notifications_status = {}
+            for reminder_min in user_states[user_id]['selected_reminders']:
+                notifications_status[str(reminder_min)] = False
+            
+            meeting = {
+                "datetime": datetime_str,
+                "description": description,
+                "notified_before": False,
+                "notified_now": False,
+                "reminder_minutes": user_states[user_id]['selected_reminders'],
+                "notifications_sent": notifications_status,
+                "repeat": "none",
+                "completed": False,
+                "tag": user_states[user_id].get('tag')
+            }
+            
+            meetings[user_id].append(meeting)
+            save_meetings()
+            
+            tz = get_user_timezone(user_id)
+            tz_str = get_timezone_string(tz)
+            
+            tag = user_states[user_id].get('tag')
+            tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
+            
+            # Формуємо текст з обраними нагадуваннями
+            reminders_list = []
+            for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
+                if min_val >= 1440:
+                    reminders_list.append(f"{min_val // 1440} день")
+                elif min_val >= 60:
+                    reminders_list.append(f"{min_val // 60} година")
+                else:
+                    reminders_list.append(f"{min_val} хвилин")
+            
+            reminders_text = ", ".join(reminders_list)
+            
+            bot.answer_callback_query(call.id, "✅ Зустріч додано!")
+            bot.edit_message_text(
+                f"✅ Зустріч швидко додано!\n\n📅 {date_str}\n🕐 {time_str}\n📝 {description}{tag_text}\n🌍 {tz_str}\n\n⏰ Нагадування: {reminders_text}",
+                call.message.chat.id, 
+                call.message.message_id
+            )
+            
+            del user_states[user_id]
+        
+        else:
+            # Додаємо/прибираємо нагадування зі списку
+            reminder_minutes = int(call.data.replace('quickremind_', ''))
+            
+            if 'selected_reminders' not in user_states[user_id]:
+                user_states[user_id]['selected_reminders'] = []
+            
+            if reminder_minutes in user_states[user_id]['selected_reminders']:
+                user_states[user_id]['selected_reminders'].remove(reminder_minutes)
+                bot.answer_callback_query(call.id, "❌ Прибрано")
+            else:
+                user_states[user_id]['selected_reminders'].append(reminder_minutes)
+                bot.answer_callback_query(call.id, "✅ Додано")
+            
+            # Оновлюємо кнопки
+            markup = types.InlineKeyboardMarkup()
+            
+            reminders_options = [
+                (1440, '⏰ 1 день'),
+                (60, '⏰ 1 година'),
+                (30, '⏰ 30 хвилин'),
+                (10, '⏰ 10 хвилин'),
+                (5, '⏰ 5 хвилин')
+            ]
+            
+            for min_val, label in reminders_options:
+                if min_val in user_states[user_id]['selected_reminders']:
+                    label = f"✅ {label}"
+                
+                if min_val >= 60:
+                    markup.add(types.InlineKeyboardButton(label, callback_data=f'quickremind_{min_val}'))
+                else:
+                    if min_val == 30:
+                        markup.row(
+                            types.InlineKeyboardButton(label, callback_data=f'quickremind_{min_val}'),
+                            types.InlineKeyboardButton('⏰ 10 хвилин' if 10 not in user_states[user_id]['selected_reminders'] else '✅ ⏰ 10 хвилин', callback_data='quickremind_10')
+                        )
+                    elif min_val == 10:
+                        continue
+                    else:
+                        markup.add(types.InlineKeyboardButton(label, callback_data=f'quickremind_{min_val}'))
+            
+            markup.add(types.InlineKeyboardButton('✅ Готово', callback_data='quickremind_done'))
+            
+            # Формуємо список обраних нагадувань
             if user_states[user_id]['selected_reminders']:
                 selected_list = []
                 for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
@@ -1504,6 +1944,7 @@ def callback_edit_select(call):
         'monthly': ' 🔁 Щомісяця'
     }.get(meeting.get('repeat', 'none'), '')
     
+    # Форматуємо список нагадувань
     reminder_minutes_list = meeting.get('reminder_minutes', [])
     if isinstance(reminder_minutes_list, int):
         reminder_minutes_list = [reminder_minutes_list]
@@ -1549,17 +1990,7 @@ def callback_edit_select(call):
         parse_mode='Markdown'
     )
 
-# Обробка кнопки "Скасувати"
-@bot.callback_query_handler(func=lambda call: call.data == 'edit_cancel')
-def callback_edit_cancel(call):
-    bot.answer_callback_query(call.id, "❌ Скасовано")
-    bot.edit_message_text(
-        "❌ Редагування скасовано",
-        call.message.chat.id,
-        call.message.message_id
-    )
-
-# Обробка редагування дати (з кнопками)
+# Редагування дати
 @bot.callback_query_handler(func=lambda call: call.data.startswith('edit_date_'))
 def callback_edit_date(call):
     user_id = str(call.message.chat.id)
@@ -1573,12 +2004,10 @@ def callback_edit_date(call):
     markup = types.InlineKeyboardMarkup()
     today_btn = types.InlineKeyboardButton('📅 Сьогодні', callback_data=f'editdate_today_{meeting_index}')
     tomorrow_btn = types.InlineKeyboardButton('📅 Завтра', callback_data=f'editdate_tomorrow_{meeting_index}')
-    custom_btn = types.InlineKeyboardButton('📅 Інша дата', callback_data=f'editdate_custom_{meeting_index}')
-    back_btn = types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}')
-    
+    other_btn = types.InlineKeyboardButton('📅 Інша дата', callback_data=f'editdate_other_{meeting_index}')
     markup.add(today_btn, tomorrow_btn)
-    markup.add(custom_btn)
-    markup.add(back_btn)
+    markup.add(other_btn)
+    markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
     
     bot.answer_callback_query(call.id)
     bot.edit_message_text(
@@ -1588,9 +2017,9 @@ def callback_edit_date(call):
         reply_markup=markup
     )
 
-# Обробка вибору дати через кнопки
+# Обробка вибору нової дати
 @bot.callback_query_handler(func=lambda call: call.data.startswith('editdate_'))
-def callback_edit_date_select(call):
+def callback_editdate(call):
     user_id = str(call.message.chat.id)
     parts = call.data.split('_')
     date_type = parts[1]
@@ -1599,85 +2028,73 @@ def callback_edit_date_select(call):
     if date_type == 'today':
         selected_date = get_user_time(user_id)
         new_date = selected_date.strftime('%d.%m.%Y')
-        
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            old_datetime = meetings[user_id][meeting_index]['datetime']
-            old_time = old_datetime.split()[1]
-            
-            meetings[user_id][meeting_index]['datetime'] = f"{new_date} {old_time}"
-            
-            if 'notifications_sent' in meetings[user_id][meeting_index]:
-                for key in meetings[user_id][meeting_index]['notifications_sent']:
-                    meetings[user_id][meeting_index]['notifications_sent'][key] = False
-            
-            meetings[user_id][meeting_index]['notified_before'] = False
-            meetings[user_id][meeting_index]['notified_now'] = False
-            
-            save_meetings()
-            
-            bot.answer_callback_query(call.id, "✅ Дату змінено")
-            bot.edit_message_text(
-                f"✅ Дату змінено на сьогодні!\n\n📅 Нова дата: {new_date}\n🕐 Час: {old_time}",
-                call.message.chat.id,
-                call.message.message_id
-            )
-            
-            if user_id in user_states:
-                del user_states[user_id]
-        else:
-            bot.answer_callback_query(call.id, "❌ Помилка")
-    
     elif date_type == 'tomorrow':
         selected_date = get_user_time(user_id) + timedelta(days=1)
         new_date = selected_date.strftime('%d.%m.%Y')
-        
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            old_datetime = meetings[user_id][meeting_index]['datetime']
-            old_time = old_datetime.split()[1]
-            
-            meetings[user_id][meeting_index]['datetime'] = f"{new_date} {old_time}"
-            
-            if 'notifications_sent' in meetings[user_id][meeting_index]:
-                for key in meetings[user_id][meeting_index]['notifications_sent']:
-                    meetings[user_id][meeting_index]['notifications_sent'][key] = False
-            
-            meetings[user_id][meeting_index]['notified_before'] = False
-            meetings[user_id][meeting_index]['notified_now'] = False
-            
-            save_meetings()
-            
-            bot.answer_callback_query(call.id, "✅ Дату змінено")
-            bot.edit_message_text(
-                f"✅ Дату змінено на завтра!\n\n📅 Нова дата: {new_date}\n🕐 Час: {old_time}",
-                call.message.chat.id,
-                call.message.message_id
-            )
-            
-            if user_id in user_states:
-                del user_states[user_id]
-        else:
-            bot.answer_callback_query(call.id, "❌ Помилка")
-    
-    elif date_type == 'custom':
+    elif date_type == 'other':
         user_states[user_id] = {
-            'step': 'edit_date_custom',
+            'step': 'edit_custom_date',
             'meeting_index': meeting_index
         }
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_date_{meeting_index}'))
-        
         bot.answer_callback_query(call.id)
         bot.edit_message_text(
             "📅 Введи нову дату у форматі ДД.ММ.РРРР\n\nНаприклад: 25.10.2025",
             call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup
+            call.message.message_id
         )
+        return
+    else:
+        return
+    
+    meeting = meetings[user_id][meeting_index]
+    old_time = meeting['datetime'].split()[1]
+    meeting['datetime'] = f"{new_date} {old_time}"
+    
+    # Скидаємо статус повідомлень
+    meeting['notified_before'] = False
+    meeting['notified_now'] = False
+    if 'notifications_sent' in meeting:
+        for key in meeting['notifications_sent']:
+            meeting['notifications_sent'][key] = False
+    
+    save_meetings()
+    
+    bot.answer_callback_query(call.id, "✅ Дату змінено")
+    
+    # Повертаємося до меню редагування
+    tag = meeting.get('tag')
+    tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
+        types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
+        types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
+        types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
+    )
+    
+    bot.edit_message_text(
+        f"✅ Дату змінено!\n\n"
+        f"📅 {meeting['datetime']}\n"
+        f"📝 {meeting['description']}{tag_text}\n\n"
+        f"Продовжити редагування?",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
 
 # Обробка введення кастомної дати для редагування
-@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'edit_date_custom')
-def process_edit_date_custom(message):
+@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'edit_custom_date')
+def process_edit_custom_date(message):
     user_id = str(message.chat.id)
     meeting_index = user_states[user_id]['meeting_index']
     
@@ -1689,256 +2106,21 @@ def process_edit_date_custom(message):
             bot.send_message(message.chat.id, "❌ Не можна встановити дату у минулому! Введи іншу дату:")
             return
         
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            old_datetime = meetings[user_id][meeting_index]['datetime']
-            old_time = old_datetime.split()[1]
-            
-            meetings[user_id][meeting_index]['datetime'] = f"{message.text} {old_time}"
-            
-            if 'notifications_sent' in meetings[user_id][meeting_index]:
-                for key in meetings[user_id][meeting_index]['notifications_sent']:
-                    meetings[user_id][meeting_index]['notifications_sent'][key] = False
-            
-            meetings[user_id][meeting_index]['notified_before'] = False
-            meetings[user_id][meeting_index]['notified_now'] = False
-            
-            save_meetings()
-            
-            bot.send_message(message.chat.id, f"✅ Дату змінено!\n\n📅 Нова дата: {message.text}\n🕐 Час: {old_time}")
-            del user_states[user_id]
-        else:
-            bot.send_message(message.chat.id, "❌ Помилка: зустріч не знайдено")
-            del user_states[user_id]
-            
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ Невірний формат дати!\n\nВикористовуй: ДД.ММ.РРРР\nНаприклад: 25.10.2025")
-
-# Обробка редагування часу (з кнопками)
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_time_'))
-def callback_edit_time(call):
-    user_id = str(call.message.chat.id)
-    meeting_index = int(call.data.replace('edit_time_', ''))
-    
-    user_states[user_id] = {
-        'step': 'edit_time',
-        'meeting_index': meeting_index
-    }
-    
-    markup = types.InlineKeyboardMarkup(row_width=3)
-    times = ['09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00', '17:00', '18:00']
-    buttons = [types.InlineKeyboardButton(t, callback_data=f'edittime_{meeting_index}_{t}') for t in times]
-    
-    for i in range(0, len(buttons), 3):
-        markup.add(*buttons[i:i+3])
-    
-    markup.add(types.InlineKeyboardButton('🕐 Інший час', callback_data=f'edittime_custom_{meeting_index}'))
-    markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
-    
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text(
-        "🕐 Обери новий час:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
-
-# Обробка вибору часу через кнопки
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edittime_'))
-def callback_edit_time_select(call):
-    user_id = str(call.message.chat.id)
-    parts = call.data.split('_')
-    meeting_index = int(parts[1])
-    
-    if len(parts) == 3 and parts[2] == 'custom':
-        user_states[user_id] = {
-            'step': 'edit_time_custom',
-            'meeting_index': meeting_index
-        }
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_time_{meeting_index}'))
-        
-        bot.answer_callback_query(call.id)
-        bot.edit_message_text(
-            "🕐 Введи новий час у форматі ГГ:ХХ\n\nНаприклад: 15:30",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup
-        )
-    else:
-        new_time = parts[2]
-        
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            old_datetime = meetings[user_id][meeting_index]['datetime']
-            old_date = old_datetime.split()[0]
-            
-            meetings[user_id][meeting_index]['datetime'] = f"{old_date} {new_time}"
-            
-            if 'notifications_sent' in meetings[user_id][meeting_index]:
-                for key in meetings[user_id][meeting_index]['notifications_sent']:
-                    meetings[user_id][meeting_index]['notifications_sent'][key] = False
-            
-            meetings[user_id][meeting_index]['notified_before'] = False
-            meetings[user_id][meeting_index]['notified_now'] = False
-            
-            save_meetings()
-            
-            bot.answer_callback_query(call.id, "✅ Час змінено")
-            bot.edit_message_text(
-                f"✅ Час змінено!\n\n📅 Дата: {old_date}\n🕐 Новий час: {new_time}",
-                call.message.chat.id,
-                call.message.message_id
-            )
-            
-            if user_id in user_states:
-                del user_states[user_id]
-        else:
-            bot.answer_callback_query(call.id, "❌ Помилка")
-
-# Обробка введення кастомного часу для редагування
-@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'edit_time_custom')
-def process_edit_time_custom(message):
-    user_id = str(message.chat.id)
-    meeting_index = user_states[user_id]['meeting_index']
-    
-    try:
-        time_obj = datetime.strptime(message.text, '%H:%M')
-        
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            old_datetime = meetings[user_id][meeting_index]['datetime']
-            old_date = old_datetime.split()[0]
-            
-            meetings[user_id][meeting_index]['datetime'] = f"{old_date} {message.text}"
-            
-            if 'notifications_sent' in meetings[user_id][meeting_index]:
-                for key in meetings[user_id][meeting_index]['notifications_sent']:
-                    meetings[user_id][meeting_index]['notifications_sent'][key] = False
-            
-            meetings[user_id][meeting_index]['notified_before'] = False
-            meetings[user_id][meeting_index]['notified_now'] = False
-            
-            save_meetings()
-            
-            bot.send_message(message.chat.id, f"✅ Час змінено!\n\n📅 Дата: {old_date}\n🕐 Новий час: {message.text}")
-            del user_states[user_id]
-        else:
-            bot.send_message(message.chat.id, "❌ Помилка: зустріч не знайдено")
-            del user_states[user_id]
-            
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ Невірний формат часу!\n\nВикористовуй: ГГ:ХХ\nНаприклад: 15:30")
-
-# Обробка редагування опису
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_desc_'))
-def callback_edit_desc(call):
-    user_id = str(call.message.chat.id)
-    meeting_index = int(call.data.replace('edit_desc_', ''))
-    
-    user_states[user_id] = {
-        'step': 'edit_desc',
-        'meeting_index': meeting_index
-    }
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
-    
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text(
-        "📝 Введи новий опис зустрічі\n\nНаприклад: Зустріч з партнерами",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
-
-# Обробка введення нового опису
-@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'edit_desc')
-def process_edit_desc(message):
-    user_id = str(message.chat.id)
-    meeting_index = user_states[user_id]['meeting_index']
-    
-    if user_id in meetings and meeting_index < len(meetings[user_id]):
-        meetings[user_id][meeting_index]['description'] = message.text
-        save_meetings()
-        
-        bot.send_message(message.chat.id, f"✅ Опис змінено!\n\n📝 Новий опис: {message.text}")
-        del user_states[user_id]
-    else:
-        bot.send_message(message.chat.id, "❌ Помилка: зустріч не знайдено")
-        del user_states[user_id]
-
-# Обробка редагування тегу
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_tag_') and not call.data.startswith('edittag_'))
-def callback_edit_tag(call):
-    user_id = str(call.message.chat.id)
-    meeting_index = int(call.data.replace('edit_tag_', ''))
-    
-    user_states[user_id] = {
-        'step': 'edit_tag',
-        'meeting_index': meeting_index
-    }
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    tag_buttons = [
-        types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'edittag_{meeting_index}_{tag}')
-        for tag, emoji in TAGS.items()
-    ]
-    
-    for i in range(0, len(tag_buttons), 2):
-        markup.add(*tag_buttons[i:i+2])
-    
-    markup.add(types.InlineKeyboardButton('➡️ Без тегу', callback_data=f'edittag_{meeting_index}_none'))
-    markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
-    
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text(
-        "🏷️ Обери новий тег для зустрічі:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
-
-# Обробка вибору нового тегу
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edittag_'))
-def callback_set_edit_tag(call):
-    user_id = str(call.message.chat.id)
-    parts = call.data.split('_')
-    meeting_index = int(parts[1])
-    tag = parts[2] if len(parts) > 2 else 'none'
-    
-    if user_id in meetings and meeting_index < len(meetings[user_id]):
-        meetings[user_id][meeting_index]['tag'] = None if tag == 'none' else tag
-        save_meetings()
-        
-        tag_emoji = TAGS.get(tag, '') if tag != 'none' else ''
-        tag_name = tag.capitalize() if tag != 'none' else 'Без тегу'
-        
-        bot.answer_callback_query(call.id, f"✅ {tag_name}")
-        
         meeting = meetings[user_id][meeting_index]
+        old_time = meeting['datetime'].split()[1]
+        meeting['datetime'] = f"{message.text} {old_time}"
+        
+        # Скидаємо статус повідомлень
+        meeting['notified_before'] = False
+        meeting['notified_now'] = False
+        if 'notifications_sent' in meeting:
+            for key in meeting['notifications_sent']:
+                meeting['notifications_sent'][key] = False
+        
+        save_meetings()
+        
         tag = meeting.get('tag')
         tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
-        
-        repeat_text = {
-            'none': '',
-            'daily': ' 🔁 Щоденно',
-            'weekly': ' 🔁 Щотижня',
-            'monthly': ' 🔁 Щомісяця'
-        }.get(meeting.get('repeat', 'none'), '')
-        
-        reminder_minutes_list = meeting.get('reminder_minutes', [])
-        if isinstance(reminder_minutes_list, int):
-            reminder_minutes_list = [reminder_minutes_list]
-        
-        reminders_list = []
-        for min_val in sorted(reminder_minutes_list, reverse=True):
-            if min_val >= 1440:
-                reminders_list.append(f"{min_val // 1440}д")
-            elif min_val >= 60:
-                reminders_list.append(f"{min_val // 60}г")
-            else:
-                reminders_list.append(f"{min_val}хв")
-        
-        reminders_text = ", ".join(reminders_list) if reminders_list else "немає"
         
         markup = types.InlineKeyboardMarkup()
         markup.add(
@@ -1954,44 +2136,322 @@ def callback_set_edit_tag(call):
             types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
         )
         markup.add(
-            types.InlineKeyboardButton('❌ Скасувати', callback_data='edit_cancel')
+            types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
         )
         
-        bot.edit_message_text(
-            f"✏️ **Редагування зустрічі:**\n\n"
+        bot.send_message(
+            message.chat.id,
+            f"✅ Дату змінено!\n\n"
             f"📅 {meeting['datetime']}\n"
-            f"📝 {meeting['description']}{tag_text}{repeat_text}\n"
-            f"⏰ Нагадування: {reminders_text}\n\n"
-            f"Що хочеш змінити?",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup,
-            parse_mode='Markdown'
+            f"📝 {meeting['description']}{tag_text}\n\n"
+            f"Продовжити редагування?",
+            reply_markup=markup
         )
         
-        if user_id in user_states:
-            del user_states[user_id]
-    else:
-        bot.answer_callback_query(call.id, "❌ Помилка")
+        del user_states[user_id]
+        
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Невірний формат дати!\n\nВикористовуй формат: ДД.ММ.РРРР\nНаприклад: 25.10.2025")
 
-# Обробка редагування нагадувань
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_remind_') and not call.data.startswith('editrem_'))
+# Редагування часу
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_time_'))
+def callback_edit_time(call):
+    user_id = str(call.message.chat.id)
+    meeting_index = int(call.data.replace('edit_time_', ''))
+    
+    user_states[user_id] = {
+        'step': 'edit_time',
+        'meeting_index': meeting_index
+    }
+    
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    times = ['09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00', '17:00', '18:00']
+    buttons = [types.InlineKeyboardButton(t, callback_data=f'edittime_{t}_{meeting_index}') for t in times]
+    
+    for i in range(0, len(buttons), 3):
+        markup.add(*buttons[i:i+3])
+    
+    markup.add(types.InlineKeyboardButton('🕐 Інший час', callback_data=f'edittime_other_{meeting_index}'))
+    markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
+    
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        "🕐 Обери новий час:",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+# Обробка вибору нового часу
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edittime_'))
+def callback_edittime(call):
+    user_id = str(call.message.chat.id)
+    parts = call.data.split('_')
+    
+    if parts[1] == 'other':
+        meeting_index = int(parts[2])
+        user_states[user_id] = {
+            'step': 'edit_custom_time',
+            'meeting_index': meeting_index
+        }
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            "🕐 Введи новий час у форматі ГГ:ХХ\n\nНаприклад: 15:30",
+            call.message.chat.id,
+            call.message.message_id
+        )
+        return
+    
+    new_time = parts[1]
+    meeting_index = int(parts[2])
+    
+    meeting = meetings[user_id][meeting_index]
+    old_date = meeting['datetime'].split()[0]
+    meeting['datetime'] = f"{old_date} {new_time}"
+    
+    # Скидаємо статус повідомлень
+    meeting['notified_before'] = False
+    meeting['notified_now'] = False
+    if 'notifications_sent' in meeting:
+        for key in meeting['notifications_sent']:
+            meeting['notifications_sent'][key] = False
+    
+    save_meetings()
+    
+    bot.answer_callback_query(call.id, "✅ Час змінено")
+    
+    tag = meeting.get('tag')
+    tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
+        types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
+        types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
+        types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
+    )
+    
+    bot.edit_message_text(
+        f"✅ Час змінено!\n\n"
+        f"📅 {meeting['datetime']}\n"
+        f"📝 {meeting['description']}{tag_text}\n\n"
+        f"Продовжити редагування?",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+# Обробка введення кастомного часу для редагування
+@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'edit_custom_time')
+def process_edit_custom_time(message):
+    user_id = str(message.chat.id)
+    meeting_index = user_states[user_id]['meeting_index']
+    
+    try:
+        time_obj = datetime.strptime(message.text, '%H:%M')
+        
+        meeting = meetings[user_id][meeting_index]
+        old_date = meeting['datetime'].split()[0]
+        meeting['datetime'] = f"{old_date} {message.text}"
+        
+        # Скидаємо статус повідомлень
+        meeting['notified_before'] = False
+        meeting['notified_now'] = False
+        if 'notifications_sent' in meeting:
+            for key in meeting['notifications_sent']:
+                meeting['notifications_sent'][key] = False
+        
+        save_meetings()
+        
+        tag = meeting.get('tag')
+        tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
+            types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
+        )
+        markup.add(
+            types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
+            types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
+        )
+        markup.add(
+            types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
+            types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
+        )
+        markup.add(
+            types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
+        )
+        
+        bot.send_message(
+            message.chat.id,
+            f"✅ Час змінено!\n\n"
+            f"📅 {meeting['datetime']}\n"
+            f"📝 {meeting['description']}{tag_text}\n\n"
+            f"Продовжити редагування?",
+            reply_markup=markup
+        )
+        
+        del user_states[user_id]
+        
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Невірний формат часу!\n\nВикористовуй формат: ГГ:ХХ\nНаприклад: 15:30")
+
+# Редагування опису
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_desc_'))
+def callback_edit_desc(call):
+    user_id = str(call.message.chat.id)
+    meeting_index = int(call.data.replace('edit_desc_', ''))
+    
+    user_states[user_id] = {
+        'step': 'edit_description',
+        'meeting_index': meeting_index
+    }
+    
+    meeting = meetings[user_id][meeting_index]
+    
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        f"📝 Поточний опис:\n{meeting['description']}\n\nВведи новий опис:",
+        call.message.chat.id,
+        call.message.message_id
+    )
+
+# Обробка нового опису
+@bot.message_handler(func=lambda message: str(message.chat.id) in user_states and user_states[str(message.chat.id)].get('step') == 'edit_description')
+def process_edit_description(message):
+    user_id = str(message.chat.id)
+    meeting_index = user_states[user_id]['meeting_index']
+    
+    meeting = meetings[user_id][meeting_index]
+    meeting['description'] = message.text
+    save_meetings()
+    
+    tag = meeting.get('tag')
+    tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
+        types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
+        types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
+        types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
+    )
+    
+    bot.send_message(
+        message.chat.id,
+        f"✅ Опис змінено!\n\n"
+        f"📅 {meeting['datetime']}\n"
+        f"📝 {meeting['description']}{tag_text}\n\n"
+        f"Продовжити редагування?",
+        reply_markup=markup
+    )
+    
+    del user_states[user_id]
+
+# Редагування тегу
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_tag_'))
+def callback_edit_tag(call):
+    user_id = str(call.message.chat.id)
+    meeting_index = int(call.data.replace('edit_tag_', ''))
+    
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    tag_buttons = [
+        types.InlineKeyboardButton(f"{emoji} {tag.capitalize()}", callback_data=f'edittag_{tag}_{meeting_index}')
+        for tag, emoji in TAGS.items()
+    ]
+    
+    for i in range(0, len(tag_buttons), 2):
+        markup.add(*tag_buttons[i:i+2])
+    
+    markup.add(types.InlineKeyboardButton('➡️ Без тегу', callback_data=f'edittag_none_{meeting_index}'))
+    markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
+    
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        "🏷️ Обери новий тег:",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+# Обробка вибору нового тегу
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edittag_'))
+def callback_edittag(call):
+    user_id = str(call.message.chat.id)
+    parts = call.data.split('_')
+    new_tag = parts[1]
+    meeting_index = int(parts[2])
+    
+    meeting = meetings[user_id][meeting_index]
+    meeting['tag'] = None if new_tag == 'none' else new_tag
+    save_meetings()
+    
+    tag_emoji = TAGS.get(new_tag, '') if new_tag != 'none' else ''
+    bot.answer_callback_query(call.id, f"✅ {tag_emoji} {new_tag.capitalize() if new_tag != 'none' else 'Без тегу'}")
+    
+    tag_text = f"\n🏷️ {tag_emoji} {new_tag.capitalize()}" if new_tag != 'none' else ""
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
+        types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
+        types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
+        types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
+    )
+    
+    bot.edit_message_text(
+        f"✅ Тег змінено!\n\n"
+        f"📅 {meeting['datetime']}\n"
+        f"📝 {meeting['description']}{tag_text}\n\n"
+        f"Продовжити редагування?",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+# Редагування нагадувань
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_remind_'))
 def callback_edit_remind(call):
     user_id = str(call.message.chat.id)
     meeting_index = int(call.data.replace('edit_remind_', ''))
     
-    if user_id not in meetings or meeting_index >= len(meetings[user_id]):
-        bot.answer_callback_query(call.id, "❌ Зустріч не знайдено")
-        return
-    
     meeting = meetings[user_id][meeting_index]
     
+    # Отримуємо поточні нагадування
     current_reminders = meeting.get('reminder_minutes', [])
     if isinstance(current_reminders, int):
         current_reminders = [current_reminders]
     
     user_states[user_id] = {
-        'step': 'edit_remind',
+        'step': 'edit_reminders',
         'meeting_index': meeting_index,
         'selected_reminders': current_reminders.copy()
     }
@@ -2011,28 +2471,30 @@ def callback_edit_remind(call):
             label = f"✅ {label}"
         
         if min_val >= 60:
-            markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{meeting_index}_{min_val}'))
+            markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{min_val}_{meeting_index}'))
         else:
             if min_val == 30:
+                label_10 = '⏰ 10 хвилин' if 10 not in current_reminders else '✅ ⏰ 10 хвилин'
                 markup.row(
-                    types.InlineKeyboardButton(label, callback_data=f'editrem_{meeting_index}_{min_val}'),
-                    types.InlineKeyboardButton('⏰ 10 хвилин' if 10 not in current_reminders else '✅ ⏰ 10 хвилин', callback_data=f'editrem_{meeting_index}_10')
+                    types.InlineKeyboardButton(label, callback_data=f'editrem_{min_val}_{meeting_index}'),
+                    types.InlineKeyboardButton(label_10, callback_data=f'editrem_10_{meeting_index}')
                 )
             elif min_val == 10:
                 continue
             else:
-                markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{meeting_index}_{min_val}'))
+                markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{min_val}_{meeting_index}'))
     
     markup.add(types.InlineKeyboardButton('✅ Зберегти', callback_data=f'editrem_save_{meeting_index}'))
     markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
     
+    # Формуємо список обраних нагадувань для відображення
     if current_reminders:
         selected_list = []
         for min_val in sorted(current_reminders, reverse=True):
             if min_val >= 1440:
                 selected_list.append(f"{min_val // 1440} день")
             elif min_val >= 60:
-                selected_list.append(f"{min_val // 60} год")
+                selected_list.append(f"{min_val // 60} година")
             else:
                 selected_list.append(f"{min_val} хв")
         selected_text = ", ".join(selected_list)
@@ -2041,23 +2503,95 @@ def callback_edit_remind(call):
     
     bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        f"⏰ Обери нагадування (можна кілька):\n\nПоточні: {selected_text}",
+        f"⏰ Редагування нагадувань\n\n"
+        f"Обрано: {selected_text}\n\n"
+        f"Обери нагадування (можна кілька):",
         call.message.chat.id,
         call.message.message_id,
         reply_markup=markup
     )
 
-# Обробка вибору/зняття нагадувань при редагуванні
-@bot.callback_query_handler(func=lambda call: call.data.startswith('editrem_') and not call.data.startswith('editrem_save_'))
-def callback_toggle_edit_reminder(call):
+# Обробка зміни нагадувань
+@bot.callback_query_handler(func=lambda call: call.data.startswith('editrem_'))
+def callback_editrem(call):
     user_id = str(call.message.chat.id)
     parts = call.data.split('_')
-    meeting_index = int(parts[1])
-    reminder_minutes = int(parts[2])
     
-    if user_id not in user_states or user_states[user_id].get('meeting_index') != meeting_index:
-        bot.answer_callback_query(call.id, "❌ Помилка")
+    if parts[1] == 'save':
+        meeting_index = int(parts[2])
+        
+        if not user_states[user_id]['selected_reminders']:
+            bot.answer_callback_query(call.id, "❌ Обери хоча б одне нагадування!")
+            return
+        
+        meeting = meetings[user_id][meeting_index]
+        meeting['reminder_minutes'] = user_states[user_id]['selected_reminders']
+        
+        # Оновлюємо notifications_sent
+        notifications_status = {}
+        for reminder_min in meeting['reminder_minutes']:
+            notifications_status[str(reminder_min)] = False
+        meeting['notifications_sent'] = notifications_status
+        
+        save_meetings()
+        
+        bot.answer_callback_query(call.id, "✅ Нагадування збережено")
+        
+        tag = meeting.get('tag')
+        tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
+        
+        # Форматуємо список нагадувань
+        reminders_list = []
+        for min_val in sorted(meeting['reminder_minutes'], reverse=True):
+            if min_val >= 1440:
+                reminders_list.append(f"{min_val // 1440}д")
+            elif min_val >= 60:
+                reminders_list.append(f"{min_val // 60}г")
+            else:
+                reminders_list.append(f"{min_val}хв")
+        
+        reminders_text = ", ".join(reminders_list)
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
+            types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
+        )
+        markup.add(
+            types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
+            types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
+        )
+        markup.add(
+            types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
+            types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
+        )
+        markup.add(
+            types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
+        )
+        
+        bot.edit_message_text(
+            f"✅ Нагадування змінено!\n\n"
+            f"📅 {meeting['datetime']}\n"
+            f"📝 {meeting['description']}{tag_text}\n"
+            f"⏰ Нагадування: {reminders_text}\n\n"
+            f"Продовжити редагування?",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=markup
+        )
+        
+        del user_states[user_id]
         return
+    
+    reminder_minutes = int(parts[1])
+    meeting_index = int(parts[2])
+    
+    if 'selected_reminders' not in user_states[user_id]:
+        meeting = meetings[user_id][meeting_index]
+        current_reminders = meeting.get('reminder_minutes', [])
+        if isinstance(current_reminders, int):
+            current_reminders = [current_reminders]
+        user_states[user_id]['selected_reminders'] = current_reminders.copy()
     
     if reminder_minutes in user_states[user_id]['selected_reminders']:
         user_states[user_id]['selected_reminders'].remove(reminder_minutes)
@@ -2066,6 +2600,7 @@ def callback_toggle_edit_reminder(call):
         user_states[user_id]['selected_reminders'].append(reminder_minutes)
         bot.answer_callback_query(call.id, "✅ Додано")
     
+    # Оновлюємо кнопки
     markup = types.InlineKeyboardMarkup()
     
     reminders_options = [
@@ -2081,28 +2616,30 @@ def callback_toggle_edit_reminder(call):
             label = f"✅ {label}"
         
         if min_val >= 60:
-            markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{meeting_index}_{min_val}'))
+            markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{min_val}_{meeting_index}'))
         else:
             if min_val == 30:
+                label_10 = '⏰ 10 хвилин' if 10 not in user_states[user_id]['selected_reminders'] else '✅ ⏰ 10 хвилин'
                 markup.row(
-                    types.InlineKeyboardButton(label, callback_data=f'editrem_{meeting_index}_{min_val}'),
-                    types.InlineKeyboardButton('⏰ 10 хвилин' if 10 not in user_states[user_id]['selected_reminders'] else '✅ ⏰ 10 хвилин', callback_data=f'editrem_{meeting_index}_10')
+                    types.InlineKeyboardButton(label, callback_data=f'editrem_{min_val}_{meeting_index}'),
+                    types.InlineKeyboardButton(label_10, callback_data=f'editrem_10_{meeting_index}')
                 )
             elif min_val == 10:
                 continue
             else:
-                markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{meeting_index}_{min_val}'))
+                markup.add(types.InlineKeyboardButton(label, callback_data=f'editrem_{min_val}_{meeting_index}'))
     
     markup.add(types.InlineKeyboardButton('✅ Зберегти', callback_data=f'editrem_save_{meeting_index}'))
     markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
     
+    # Формуємо список обраних нагадувань
     if user_states[user_id]['selected_reminders']:
         selected_list = []
         for min_val in sorted(user_states[user_id]['selected_reminders'], reverse=True):
             if min_val >= 1440:
                 selected_list.append(f"{min_val // 1440} день")
             elif min_val >= 60:
-                selected_list.append(f"{min_val // 60} год")
+                selected_list.append(f"{min_val // 60} година")
             else:
                 selected_list.append(f"{min_val} хв")
         selected_text = ", ".join(selected_list)
@@ -2110,132 +2647,33 @@ def callback_toggle_edit_reminder(call):
         selected_text = "немає"
     
     bot.edit_message_text(
-        f"⏰ Обери нагадування (можна кілька):\n\nОбрано: {selected_text}",
+        f"⏰ Редагування нагадувань\n\n"
+        f"Обрано: {selected_text}\n\n"
+        f"Обери нагадування (можна кілька):",
         call.message.chat.id,
         call.message.message_id,
         reply_markup=markup
     )
 
-# Збереження нових нагадувань
-@bot.callback_query_handler(func=lambda call: call.data.startswith('editrem_save_'))
-def callback_save_edit_reminders(call):
-    user_id = str(call.message.chat.id)
-    meeting_index = int(call.data.replace('editrem_save_', ''))
-    
-    if user_id not in user_states or not user_states[user_id].get('selected_reminders'):
-        bot.answer_callback_query(call.id, "❌ Обери хоча б одне нагадування!")
-        return
-    
-    if user_id in meetings and meeting_index < len(meetings[user_id]):
-        new_reminders = user_states[user_id]['selected_reminders']
-        
-        meetings[user_id][meeting_index]['reminder_minutes'] = new_reminders
-        
-        notifications_status = {}
-        for reminder_min in new_reminders:
-            notifications_status[str(reminder_min)] = False
-        
-        meetings[user_id][meeting_index]['notifications_sent'] = notifications_status
-        meetings[user_id][meeting_index]['notified_before'] = False
-        meetings[user_id][meeting_index]['notified_now'] = False
-        
-        save_meetings()
-        
-        reminders_list = []
-        for min_val in sorted(new_reminders, reverse=True):
-            if min_val >= 1440:
-                reminders_list.append(f"{min_val // 1440} день")
-            elif min_val >= 60:
-                reminders_list.append(f"{min_val // 60} година")
-            else:
-                reminders_list.append(f"{min_val} хвилин")
-        
-        reminders_text = ", ".join(reminders_list)
-        
-        bot.answer_callback_query(call.id, "✅ Збережено")
-        
-        meeting = meetings[user_id][meeting_index]
-        tag = meeting.get('tag')
-        tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
-        
-        repeat_text = {
-            'none': '',
-            'daily': ' 🔁 Щоденно',
-            'weekly': ' 🔁 Щотижня',
-            'monthly': ' 🔁 Щомісяця'
-        }.get(meeting.get('repeat', 'none'), '')
-        
-        reminder_minutes_list = meeting.get('reminder_minutes', [])
-        if isinstance(reminder_minutes_list, int):
-            reminder_minutes_list = [reminder_minutes_list]
-        
-        reminders_list = []
-        for min_val in sorted(reminder_minutes_list, reverse=True):
-            if min_val >= 1440:
-                reminders_list.append(f"{min_val // 1440}д")
-            elif min_val >= 60:
-                reminders_list.append(f"{min_val // 60}г")
-            else:
-                reminders_list.append(f"{min_val}хв")
-        
-        reminders_text_short = ", ".join(reminders_list) if reminders_list else "немає"
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
-            types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
-        )
-        markup.add(
-            types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
-            types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
-        )
-        markup.add(
-            types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
-            types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
-        )
-        markup.add(
-            types.InlineKeyboardButton('❌ Скасувати', callback_data='edit_cancel')
-        )
-        
-        bot.edit_message_text(
-            f"✏️ **Редагування зустрічі:**\n\n"
-            f"📅 {meeting['datetime']}\n"
-            f"📝 {meeting['description']}{tag_text}{repeat_text}\n"
-            f"⏰ Нагадування: {reminders_text_short}\n\n"
-            f"Що хочеш змінити?",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup,
-            parse_mode='Markdown'
-        )
-        
-        del user_states[user_id]
-    else:
-        bot.answer_callback_query(call.id, "❌ Помилка")
-
-# Обробка редагування повторення
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_repeat_') and not call.data.startswith('editrep_'))
+# Редагування повторення
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_repeat_'))
 def callback_edit_repeat(call):
     user_id = str(call.message.chat.id)
     meeting_index = int(call.data.replace('edit_repeat_', ''))
-    
-    if user_id not in meetings or meeting_index >= len(meetings[user_id]):
-        bot.answer_callback_query(call.id, "❌ Зустріч не знайдено")
-        return
     
     meeting = meetings[user_id][meeting_index]
     current_repeat = meeting.get('repeat', 'none')
     
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('📅 Не повторювати', callback_data=f'editrep_{meeting_index}_none')
+        types.InlineKeyboardButton('📅 Не повторювати', callback_data=f'editrep_none_{meeting_index}')
     )
     markup.add(
-        types.InlineKeyboardButton('🔁 Щоденно', callback_data=f'editrep_{meeting_index}_daily'),
-        types.InlineKeyboardButton('🔁 Щотижня', callback_data=f'editrep_{meeting_index}_weekly')
+        types.InlineKeyboardButton('🔁 Щоденно', callback_data=f'editrep_daily_{meeting_index}'),
+        types.InlineKeyboardButton('🔁 Щотижня', callback_data=f'editrep_weekly_{meeting_index}')
     )
     markup.add(
-        types.InlineKeyboardButton('🔁 Щомісяця', callback_data=f'editrep_{meeting_index}_monthly')
+        types.InlineKeyboardButton('🔁 Щомісяця', callback_data=f'editrep_monthly_{meeting_index}')
     )
     markup.add(types.InlineKeyboardButton('◀️ Назад', callback_data=f'edit_select_{meeting_index}'))
     
@@ -2248,91 +2686,128 @@ def callback_edit_repeat(call):
     
     bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        f"🔁 Налаштування повторень\n\nЗараз: {repeat_text}\n\nОбери новий режим:",
+        f"🔁 Редагування повторень\n\n"
+        f"📝 {meeting['description']}\n"
+        f"📅 {meeting['datetime']}\n\n"
+        f"Зараз: {repeat_text}\n\n"
+        f"Обери новий режим:",
         call.message.chat.id,
         call.message.message_id,
         reply_markup=markup
     )
 
-# Збереження нового режиму повторення
+# Обробка зміни повторення
 @bot.callback_query_handler(func=lambda call: call.data.startswith('editrep_'))
-def callback_save_edit_repeat(call):
+def callback_editrep(call):
     user_id = str(call.message.chat.id)
     parts = call.data.split('_')
-    meeting_index = int(parts[1])
-    repeat_type = parts[2]
+    new_repeat = parts[1]
+    meeting_index = int(parts[2])
+    
+    meeting = meetings[user_id][meeting_index]
+    meeting['repeat'] = new_repeat
+    save_meetings()
+    
+    repeat_text = {
+        'none': 'не повторюється',
+        'daily': 'щоденно',
+        'weekly': 'щотижня',
+        'monthly': 'щомісяця'
+    }[new_repeat]
+    
+    bot.answer_callback_query(call.id, f"✅ {repeat_text.capitalize()}")
+    
+    tag = meeting.get('tag')
+    tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
+    
+    repeat_emoji = " 🔁" if new_repeat != 'none' else ""
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
+        types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
+        types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
+        types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
+    )
+    markup.add(
+        types.InlineKeyboardButton('✅ Готово', callback_data='edit_done')
+    )
+    
+    bot.edit_message_text(
+        f"✅ Повторення змінено: {repeat_text}!\n\n"
+        f"📅 {meeting['datetime']}{repeat_emoji}\n"
+        f"📝 {meeting['description']}{tag_text}\n\n"
+        f"Продовжити редагування?",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+# Завершення редагування
+@bot.callback_query_handler(func=lambda call: call.data == 'edit_done')
+def callback_edit_done(call):
+    bot.answer_callback_query(call.id, "✅ Зміни збережено")
+    bot.edit_message_text(
+        "✅ Зустріч успішно відредаговано!\n\nВикористовуй /list щоб переглянути всі зустрічі",
+        call.message.chat.id,
+        call.message.message_id
+    )
+
+# Скасування редагування
+@bot.callback_query_handler(func=lambda call: call.data == 'edit_cancel')
+def callback_edit_cancel(call):
+    bot.answer_callback_query(call.id, "❌ Скасовано")
+    bot.edit_message_text(
+        "❌ Редагування скасовано",
+        call.message.chat.id,
+        call.message.message_id
+    )
+
+# Команда /delete
+@bot.message_handler(commands=['delete'])
+def delete_meeting(message):
+    user_id = str(message.chat.id)
+    
+    if user_id not in meetings or not meetings[user_id]:
+        bot.reply_to(message, "📭 У тебе немає зустрічей для видалення.")
+        return
+    
+    markup = types.InlineKeyboardMarkup()
+    
+    for i, meeting in enumerate(meetings[user_id]):
+        dt = datetime.strptime(meeting['datetime'], "%d.%m.%Y %H:%M")
+        tag = meeting.get('tag')
+        tag_text = f"{TAGS.get(tag, '')} " if tag else ""
+        button_text = f"{tag_text}{dt.strftime('%d.%m %H:%M')} - {meeting['description'][:30]}"
+        callback_data = f"delete_{i}"
+        markup.add(types.InlineKeyboardButton(button_text, callback_data=callback_data))
+    
+    bot.reply_to(message, "🗑 Обери зустріч для видалення:", reply_markup=markup)
+
+# Обробка натискань на кнопки видалення
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
+def callback_delete(call):
+    user_id = str(call.message.chat.id)
+    meeting_index = int(call.data.split('_')[1])
     
     if user_id in meetings and meeting_index < len(meetings[user_id]):
-        meetings[user_id][meeting_index]['repeat'] = repeat_type
+        deleted_meeting = meetings[user_id].pop(meeting_index)
         save_meetings()
         
-        repeat_text = {
-            'none': 'не повторюється',
-            'daily': 'щоденно',
-            'weekly': 'щотижня',
-            'monthly': 'щомісяця'
-        }[repeat_type]
-        
-        emoji = "📅" if repeat_type == 'none' else "🔁"
-        
-        bot.answer_callback_query(call.id, f"✅ {repeat_text.capitalize()}")
-        
-        meeting = meetings[user_id][meeting_index]
-        tag = meeting.get('tag')
-        tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
-        
-        repeat_text_full = {
-            'none': '',
-            'daily': ' 🔁 Щоденно',
-            'weekly': ' 🔁 Щотижня',
-            'monthly': ' 🔁 Щомісяця'
-        }.get(meeting.get('repeat', 'none'), '')
-        
-        reminder_minutes_list = meeting.get('reminder_minutes', [])
-        if isinstance(reminder_minutes_list, int):
-            reminder_minutes_list = [reminder_minutes_list]
-        
-        reminders_list = []
-        for min_val in sorted(reminder_minutes_list, reverse=True):
-            if min_val >= 1440:
-                reminders_list.append(f"{min_val // 1440}д")
-            elif min_val >= 60:
-                reminders_list.append(f"{min_val // 60}г")
-            else:
-                reminders_list.append(f"{min_val}хв")
-        
-        reminders_text = ", ".join(reminders_list) if reminders_list else "немає"
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton('📅 Дату', callback_data=f'edit_date_{meeting_index}'),
-            types.InlineKeyboardButton('🕐 Час', callback_data=f'edit_time_{meeting_index}')
-        )
-        markup.add(
-            types.InlineKeyboardButton('📝 Опис', callback_data=f'edit_desc_{meeting_index}'),
-            types.InlineKeyboardButton('🏷️ Тег', callback_data=f'edit_tag_{meeting_index}')
-        )
-        markup.add(
-            types.InlineKeyboardButton('⏰ Нагадування', callback_data=f'edit_remind_{meeting_index}'),
-            types.InlineKeyboardButton('🔁 Повторення', callback_data=f'edit_repeat_{meeting_index}')
-        )
-        markup.add(
-            types.InlineKeyboardButton('❌ Скасувати', callback_data='edit_cancel')
-        )
-        
+        bot.answer_callback_query(call.id, "✅ Зустріч видалено")
         bot.edit_message_text(
-            f"✏️ **Редагування зустрічі:**\n\n"
-            f"📅 {meeting['datetime']}\n"
-            f"📝 {meeting['description']}{tag_text}{repeat_text_full}\n"
-            f"⏰ Нагадування: {reminders_text}\n\n"
-            f"Що хочеш змінити?",
+            f"✅ Зустріч видалено:\n\n📝 {deleted_meeting['description']}\n📅 {deleted_meeting['datetime']}",
             call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup,
-            parse_mode='Markdown'
+            call.message.message_id
         )
     else:
-        bot.answer_callback_query(call.id, "❌ Помилка")
+        bot.answer_callback_query(call.id, "❌ Помилка видалення")
 
 # Команда /repeat для налаштування повторюваних зустрічей
 @bot.message_handler(commands=['repeat'])
@@ -2425,46 +2900,6 @@ def callback_set_repeat(call):
         call.message.chat.id,
         call.message.message_id
     )
-
-# Команда /delete
-@bot.message_handler(commands=['delete'])
-def delete_meeting(message):
-    user_id = str(message.chat.id)
-    
-    if user_id not in meetings or not meetings[user_id]:
-        bot.reply_to(message, "📭 У тебе немає зустрічей для видалення.")
-        return
-    
-    markup = types.InlineKeyboardMarkup()
-    
-    for i, meeting in enumerate(meetings[user_id]):
-        dt = datetime.strptime(meeting['datetime'], "%d.%m.%Y %H:%M")
-        tag = meeting.get('tag')
-        tag_text = f"{TAGS.get(tag, '')} " if tag else ""
-        button_text = f"{tag_text}{dt.strftime('%d.%m %H:%M')} - {meeting['description'][:30]}"
-        callback_data = f"delete_{i}"
-        markup.add(types.InlineKeyboardButton(button_text, callback_data=callback_data))
-    
-    bot.reply_to(message, "🗑 Обери зустріч для видалення:", reply_markup=markup)
-
-# Обробка натискань на кнопки видалення
-@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_') and not call.data.startswith('deleteall_') and not call.data.startswith('deltag_'))
-def callback_delete(call):
-    user_id = str(call.message.chat.id)
-    meeting_index = int(call.data.split('_')[1])
-    
-    if user_id in meetings and meeting_index < len(meetings[user_id]):
-        deleted_meeting = meetings[user_id].pop(meeting_index)
-        save_meetings()
-        
-        bot.answer_callback_query(call.id, "✅ Зустріч видалено")
-        bot.edit_message_text(
-            f"✅ Зустріч видалено:\n\n📝 {deleted_meeting['description']}\n📅 {deleted_meeting['datetime']}",
-            call.message.chat.id,
-            call.message.message_id
-        )
-    else:
-        bot.answer_callback_query(call.id, "❌ Помилка видалення")
 
 # Команда /deleteall для масового видалення
 @bot.message_handler(commands=['deleteall'])
@@ -2880,153 +3315,6 @@ def callback_meeting_action(call):
         else:
             bot.answer_callback_query(call.id, "❌ Помилка видалення")
 
-# Команда /updates
-@bot.message_handler(commands=['updates'])
-def updates_command(message):
-    updates_text = """
-📢 **Останнє оновлення бота**
-
-🆕 (21.10.2025)
-
-☁️ **Інтеграція з GitHub**
-
-Тепер всі дані зберігаються в GitHub:
-- 💾 Автоматичне збереження зустрічей
-- 🔄 Синхронізація між пристроями
-- 🔐 Безпечне зберігання в хмарі
-- 📦 Резервне копіювання
-
----
-
-🔙 **Попереднє оновлення (20.10.2025)**
-
-⏰ **Автоматичний літній/зимовий час**
-
-Бот тепер автоматично визначає та відображає літній/зимовий час для всіх міст.
-
-✏️ **Додано команду /edit**
-
-Можливість редагувати зустрічі:
-- 📅 Змінити дату
-- 🕐 Змінити час
-- 📝 Змінити опис
-- 🏷️ Змінити тег
-- ⏰ Налаштувати нагадування
-- 🔁 Змінити режим повторення
-
-⚡️ **Покращена команда /quickadd**
-
-Швидке додавання зустрічей з кнопками.
-
----
-Використовуй /help для перегляду всіх команд
-"""
-    bot.reply_to(message, updates_text, parse_mode='Markdown')
-
-# Обробка кнопок дій з нагадуваннями
-@bot.callback_query_handler(func=lambda call: call.data.startswith('action_'))
-def callback_meeting_action(call):
-    user_id = str(call.message.chat.id)
-    action_parts = call.data.split('_')
-    action_type = action_parts[1]
-    meeting_index = int(action_parts[2])
-    
-    if action_type == 'reschedule':
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            meeting = meetings[user_id][meeting_index]
-            
-            current_datetime = datetime.strptime(meeting['datetime'], "%d.%m.%Y %H:%M")
-            
-            new_datetime = current_datetime + timedelta(days=1)
-            meeting['datetime'] = new_datetime.strftime("%d.%m.%Y %H:%M")
-            
-            meeting['notified_before'] = False
-            meeting['notified_now'] = False
-            
-            if 'notifications_sent' in meeting:
-                for key in meeting['notifications_sent']:
-                    meeting['notifications_sent'][key] = False
-            
-            save_meetings()
-            
-            bot.answer_callback_query(call.id, "✅ Перенесено на завтра")
-            bot.edit_message_text(
-                f"🔁 Зустріч перенесена на завтра!\n\n📝 {meeting['description']}\n📅 {meeting['datetime']}",
-                call.message.chat.id,
-                call.message.message_id
-            )
-        else:
-            bot.answer_callback_query(call.id, "❌ Помилка перенесення")
-    
-    elif action_type == 'ok':
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            meetings[user_id][meeting_index]['completed'] = True
-            save_meetings()
-        
-        bot.answer_callback_query(call.id, "✅ OK")
-        bot.edit_message_text(
-            f"{call.message.text}\n\n✅ Прийнято!",
-            call.message.chat.id,
-            call.message.message_id
-        )
-    
-    elif action_type == 'del':
-        if user_id in meetings and meeting_index < len(meetings[user_id]):
-            deleted_meeting = meetings[user_id].pop(meeting_index)
-            save_meetings()
-            
-            bot.answer_callback_query(call.id, "✅ Зустріч видалено")
-            bot.edit_message_text(
-                f"🗑 Зустріч видалено!\n\n📝 {deleted_meeting['description']}\n📅 {deleted_meeting['datetime']}",
-                call.message.chat.id,
-                call.message.message_id
-            )
-        else:
-            bot.answer_callback_query(call.id, "❌ Помилка видалення")
-
-# Команда /updates
-@bot.message_handler(commands=['updates'])
-def updates_command(message):
-    updates_text = """
-📢 **Останнє оновлення бота**
-
-🆕 (21.10.2025)
-
-☁️ **Інтеграція з GitHub**
-
-Тепер всі дані зберігаються в GitHub:
-- 💾 Автоматичне збереження зустрічей
-- 🔄 Синхронізація між пристроями
-- 🔐 Безпечне зберігання в хмарі
-- 📦 Резервне копіювання
-
----
-
-🔙 **Попереднє оновлення (20.10.2025)**
-
-⏰ **Автоматичний літній/зимовий час**
-
-Бот тепер автоматично визначає та відображає літній/зимовий час для всіх міст.
-
-✏️ **Додано команду /edit**
-
-Можливість редагувати зустрічі:
-- 📅 Змінити дату
-- 🕐 Змінити час
-- 📝 Змінити опис
-- 🏷️ Змінити тег
-- ⏰ Налаштувати нагадування
-- 🔁 Змінити режим повторення
-
-⚡️ **Покращена команда /quickadd**
-
-Швидке додавання зустрічей з кнопками.
-
----
-Використовуй /help для перегляду всіх команд
-"""
-    bot.reply_to(message, updates_text, parse_mode='Markdown')
-
 # Фоновий процес для відправки нагадувань
 def send_reminders():
     while True:
@@ -3042,24 +3330,29 @@ def send_reminders():
                     meeting_time = datetime.strptime(meeting['datetime'], "%d.%m.%Y %H:%M")
                     time_diff = (meeting_time - user_now).total_seconds()
                     
+                    # Перевіряємо, чи є список нагадувань (новий формат) або одне нагадування (старий формат)
                     reminder_minutes_list = meeting.get('reminder_minutes')
                     
+                    # Підтримка старого формату (одне число)
                     if isinstance(reminder_minutes_list, int):
                         reminder_minutes_list = [reminder_minutes_list]
                         meeting['reminder_minutes'] = reminder_minutes_list
                         meeting['notifications_sent'] = {str(reminder_minutes_list[0]): False}
                         save_meetings()
                     
+                    # Ініціалізуємо notifications_sent якщо його немає
                     if 'notifications_sent' not in meeting:
                         meeting['notifications_sent'] = {}
                         for reminder_min in reminder_minutes_list:
                             meeting['notifications_sent'][str(reminder_min)] = False
                         save_meetings()
                     
+                    # Перевіряємо кожне нагадування
                     for reminder_minutes in reminder_minutes_list:
                         reminder_seconds = reminder_minutes * 60
                         reminder_key = str(reminder_minutes)
                         
+                        # Відправляємо нагадування, якщо час підійшов і воно ще не відправлено
                         if not meeting['notifications_sent'].get(reminder_key, False) and 0 < time_diff <= reminder_seconds:
                             markup = types.InlineKeyboardMarkup()
                             markup.add(
@@ -3073,6 +3366,7 @@ def send_reminders():
                             tag = meeting.get('tag')
                             tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
                             
+                            # Форматуємо час нагадування
                             if reminder_minutes >= 1440:
                                 time_text = f"{reminder_minutes // 1440} день"
                             elif reminder_minutes >= 60:
@@ -3086,6 +3380,7 @@ def send_reminders():
                             meeting['notifications_sent'][reminder_key] = True
                             save_meetings()
                     
+                    # Нагадування у вказаний час
                     if not meeting.get('notified_now', False) and -60 <= time_diff <= 0:
                         tag = meeting.get('tag')
                         tag_text = f"\n🏷️ {TAGS.get(tag, '')} {tag.capitalize()}" if tag else ""
@@ -3105,6 +3400,7 @@ def send_reminders():
                             elif repeat_type == 'monthly':
                                 new_time = meeting_time + timedelta(days=30)
                             
+                            # Створюємо новий словник для відстеження повідомлень
                             new_notifications_status = {}
                             for reminder_min in reminder_minutes_list:
                                 new_notifications_status[str(reminder_min)] = False
@@ -3133,18 +3429,12 @@ def send_reminders():
 
 # Запуск бота
 if __name__ == "__main__":
-    print("🔄 Завантаження даних...")
     load_meetings()
     load_settings()
     load_history()
     
-    print("🚀 Запуск фонового процесу нагадувань...")
     reminder_thread = threading.Thread(target=send_reminders, daemon=True)
     reminder_thread.start()
     
-    print("✅ Бот запущено!")
-    print("📁 Дані зберігаються локально та в GitHub")
-    print("🌍 Підтримка автоматичного літнього/зимового часу")
-    print("⏰ Фоновий процес нагадувань активний")
-    print("💡 Всі команди: /add, /quickadd, /edit, /repeat, /list, /delete, /stats")
+    print("🤖 Бот запущено!")
     bot.infinity_polling()
